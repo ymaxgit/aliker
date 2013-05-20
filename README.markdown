@@ -8,7 +8,7 @@ http://kernel.taobao.org
 Features
 ========
 
-* All features of RHEL6U2 kernel, source code version is 2.6.32-220.23.1.
+* All features of RHEL6U3 kernel, source code version is 2.6.32-279.14.1.
 * netoops to enable you collect data from the panic server, https://lwn.net/Articles/414031/.
 * bigalloc and inline data support for ext4. https://lwn.net/Articles/469805/
 * overlayfs which can deploy one fs over another. Please refer to http://lwn.net/Articles/447650/.
