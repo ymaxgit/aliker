@@ -111,7 +111,6 @@ struct net;
  *	@skc_family: network address family
  *	@skc_state: Connection state
  *	@skc_reuse: %SO_REUSEADDR setting
- *	@skc_reuseport: %SO_REUSEPORT setting
  *	@skc_bound_dev_if: bound device index if != 0
  *	@skc_bind_node: bind hash linkage for various protocol lookup tables
  *	@skc_prot: protocol handlers inside a network family
@@ -133,8 +132,7 @@ struct sock_common {
 	unsigned int		skc_hash;
 	unsigned short		skc_family;
 	volatile unsigned char	skc_state;
-	unsigned char		skc_reuse:1;
-	unsigned char		skc_reuseport:1;
+	unsigned char		skc_reuse;
 	int			skc_bound_dev_if;
 	struct hlist_node	skc_bind_node;
 	struct proto		*skc_prot;
@@ -149,7 +147,6 @@ struct sock_common {
   *	@sk_shutdown: mask of %SEND_SHUTDOWN and/or %RCV_SHUTDOWN
   *	@sk_userlocks: %SO_SNDBUF and %SO_RCVBUF settings
   *	@sk_lock:	synchronizer
-  *	@sk_friend: loopback friend socket
   *	@sk_rcvbuf: size of receive buffer in bytes
   *	@sk_sleep: sock wait queue
   *	@sk_dst_cache: destination cache
@@ -224,7 +221,6 @@ struct sock {
 #define sk_family		__sk_common.skc_family
 #define sk_state		__sk_common.skc_state
 #define sk_reuse		__sk_common.skc_reuse
-#define sk_reuseport		__sk_common.skc_reuseport
 #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
 #define sk_bind_node		__sk_common.skc_bind_node
 #define sk_prot			__sk_common.skc_prot
@@ -238,14 +234,6 @@ struct sock {
 	kmemcheck_bitfield_end(flags);
 	int			sk_rcvbuf;
 	socket_lock_t		sk_lock;
-	/*
-	 * If socket has a friend (sk_friend != NULL) then a send skb is
-	 * enqueued directly to the friend's sk_receive_queue such that:
-	 *
-	 *        sk_sndbuf -> sk_sndbuf + sk_friend->sk_rcvbuf
-	 *   sk_wmem_queued -> sk_friend->sk_rmem_alloc
-	 */
-	struct sock		*sk_friend;
 	/*
 	 * The backlog queue is special, it is always used with
 	 * the per-socket spinlock held and requires low latency
@@ -349,6 +337,20 @@ struct sock_extended {
 	struct {
 		int len;
 	} sk_backlog;
+
+#ifdef CONFIG_CGROUPS
+	struct {
+		u32 sk_cgrp_prioidx;
+	} __sk_common_extended2;
+#endif
+
+	__u8			min_ttl;
+	__u8			min_hopcount;
+	/* rcv_tos could not be put inside inet_sock_extended above (where
+	 * it belongs) because the following fields would shift and
+	 * sk_rcvqueues_full(), sk_set_min_ttl(), etc. would break for
+	 * existing modules. */
+	__u8			rcv_tos;
 };
 
 #define __sk_tx_queue_mapping(sk) \
@@ -602,40 +604,24 @@ static inline int sk_acceptq_is_full(struct sock *sk)
 	return sk->sk_ack_backlog > sk->sk_max_ack_backlog;
 }
 
-static inline int sk_wmem_queued_get(const struct sock *sk)
-{
-	if (sk->sk_friend)
-		return atomic_read(&sk->sk_friend->sk_rmem_alloc);
-	else
-		return sk->sk_wmem_queued;
-}
-
-static inline int sk_sndbuf_get(const struct sock *sk)
-{
-	if (sk->sk_friend)
-		return sk->sk_sndbuf + sk->sk_friend->sk_rcvbuf;
-	else
-		return sk->sk_sndbuf;
-}
-
 /*
  * Compute minimal free write space needed to queue new packets.
  */
 static inline int sk_stream_min_wspace(struct sock *sk)
 {
-	return sk_wmem_queued_get(sk) >> 1;
+	return sk->sk_wmem_queued >> 1;
 }
 
 static inline int sk_stream_wspace(struct sock *sk)
 {
-	return sk_sndbuf_get(sk) - sk_wmem_queued_get(sk);
+	return sk->sk_sndbuf - sk->sk_wmem_queued;
 }
 
 extern void sk_stream_write_space(struct sock *sk);
 
 static inline int sk_stream_memory_free(struct sock *sk)
 {
-	return sk_wmem_queued_get(sk) < sk_sndbuf_get(sk);
+	return sk->sk_wmem_queued < sk->sk_sndbuf;
 }
 
 /* OOB backlog add */
@@ -709,7 +695,6 @@ static inline void sock_rps_save_rxhash(struct sock *sk, u32 rxhash)
 	})
 
 extern int sk_stream_wait_connect(struct sock *sk, long *timeo_p);
-extern int sk_stream_wait_friend(struct sock *sk, long *timeo_p);
 extern int sk_stream_wait_memory(struct sock *sk, long *timeo_p);
 extern void sk_stream_wait_close(struct sock *sk, long timeo_p);
 extern int sk_stream_error(struct sock *sk, int flags, int err);
@@ -827,6 +812,34 @@ static inline struct sock_extended *sk_extended(const struct sock *sk)
 	unsigned int obj_size = sk->sk_prot_creator->obj_size;
 
 	return (struct sock_extended *) (((char *) sk) + obj_size);
+}
+
+static inline __u8 sk_get_min_ttl(const struct sock *sk)
+{
+	struct sock_extended *sk_ext = sk_extended(sk);
+
+	return sk_ext->min_ttl;
+}
+
+static inline void sk_set_min_ttl(struct sock *sk, __u8 min_ttl)
+{
+	struct sock_extended *sk_ext = sk_extended(sk);
+
+	sk_ext->min_ttl = min_ttl;
+}
+
+static inline __u8 sk_get_min_hopcount(const struct sock *sk)
+{
+	struct sock_extended *sk_ext = sk_extended(sk);
+
+	return sk_ext->min_hopcount;
+}
+
+static inline void sk_set_min_hopcount(struct sock *sk, __u8 min_hopcount)
+{
+	struct sock_extended *sk_ext = sk_extended(sk);
+
+	sk_ext->min_hopcount = min_hopcount;
 }
 
 extern int proto_register(struct proto *prot, int alloc_slab);

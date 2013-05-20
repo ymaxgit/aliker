@@ -278,8 +278,8 @@ static void km_dp_init(struct dpages *dp, void *data)
 /*-----------------------------------------------------------------
  * IO routines that accept a list of pages.
  *---------------------------------------------------------------*/
-static void do_region(int rw, unsigned region, struct dm_io_region *where,
-		      struct dpages *dp, struct io *io)
+static void do_region(struct dm_io_request *io_req, unsigned region,
+		struct dm_io_region *where, struct dpages *dp, struct io *io)
 {
 	struct bio *bio;
 	struct page *page;
@@ -289,6 +289,7 @@ static void do_region(int rw, unsigned region, struct dm_io_region *where,
 	sector_t remaining = where->count;
 	struct request_queue *q = bdev_get_queue(where->bdev);
 	sector_t discard_sectors;
+	int rw = io_req->bi_rw;
 
 	/*
 	 * where->count may be zero if rw holds a flush and we need to
@@ -330,15 +331,26 @@ static void do_region(int rw, unsigned region, struct dm_io_region *where,
 		}
 
 		atomic_inc(&io->count);
-		submit_bio(rw, bio);
+		if (!io_req->only_create_bio)
+			submit_bio(rw, bio);
+		else {
+			bio->bi_rw |= rw;
+			if (io_req->end) {
+				io_req->end->bi_next = bio;
+				io_req->end = bio;
+			} else
+				io_req->start = io_req->end = bio;
+			bio->bi_next = NULL;
+		}
 	} while (remaining);
 }
 
-static void dispatch_io(int rw, unsigned int num_regions,
+static void dispatch_io(struct dm_io_request *io_req, unsigned int num_regions,
 			struct dm_io_region *where, struct dpages *dp,
 			struct io *io, int sync)
 {
 	int i;
+	int rw = io_req->bi_rw;
 	struct dpages old_pages = *dp;
 
 	BUG_ON(num_regions > DM_IO_MAX_REGIONS);
@@ -353,7 +365,7 @@ static void dispatch_io(int rw, unsigned int num_regions,
 	for (i = 0; i < num_regions; i++) {
 		*dp = old_pages;
 		if (where[i].count || (rw & BIO_FLUSH))
-			do_region(rw, i, where + i, dp, io);
+			do_region(io_req, i, where + i, dp, io);
 	}
 
 	/*
@@ -363,8 +375,8 @@ static void dispatch_io(int rw, unsigned int num_regions,
 	dec_count(io, 0, 0);
 }
 
-static int sync_io(struct dm_io_client *client, unsigned int num_regions,
-		   struct dm_io_region *where, int rw, struct dpages *dp,
+static int sync_io(struct dm_io_request *io_req,  unsigned int num_regions,
+		   struct dm_io_region *where, struct dpages *dp,
 		   unsigned long *error_bits)
 {
 	/*
@@ -376,7 +388,7 @@ static int sync_io(struct dm_io_client *client, unsigned int num_regions,
 	volatile char io_[sizeof(struct io) + __alignof__(struct io) - 1];
 	struct io *io = (struct io *)PTR_ALIGN(&io_, __alignof__(struct io));
 
-	if (num_regions > 1 && (rw & RW_MASK) != WRITE) {
+	if (num_regions > 1 && (io_req->bi_rw & RW_MASK) != WRITE) {
 		WARN_ON(1);
 		return -EIO;
 	}
@@ -384,9 +396,9 @@ static int sync_io(struct dm_io_client *client, unsigned int num_regions,
 	io->error_bits = 0;
 	atomic_set(&io->count, 1); /* see dispatch_io() */
 	io->sleeper = current;
-	io->client = client;
+	io->client = io_req->client;
 
-	dispatch_io(rw, num_regions, where, dp, io, 1);
+	dispatch_io(io_req, num_regions, where, dp, io, 1);
 
 	while (1) {
 		set_current_state(TASK_UNINTERRUPTIBLE);
@@ -404,27 +416,26 @@ static int sync_io(struct dm_io_client *client, unsigned int num_regions,
 	return io->error_bits ? -EIO : 0;
 }
 
-static int async_io(struct dm_io_client *client, unsigned int num_regions,
-		    struct dm_io_region *where, int rw, struct dpages *dp,
-		    io_notify_fn fn, void *context)
+static int async_io(struct dm_io_request *io_req, unsigned int num_regions,
+		struct dm_io_region *where, struct dpages *dp)
 {
 	struct io *io;
 
-	if (num_regions > 1 && (rw & RW_MASK) != WRITE) {
+	if (num_regions > 1 && (io_req->bi_rw & RW_MASK) != WRITE) {
 		WARN_ON(1);
-		fn(1, context);
+		io_req->notify.fn(1, io_req->notify.context);
 		return -EIO;
 	}
 
-	io = mempool_alloc(client->pool, GFP_NOIO);
+	io = mempool_alloc(io_req->client->pool, GFP_NOIO);
 	io->error_bits = 0;
 	atomic_set(&io->count, 1); /* see dispatch_io() */
 	io->sleeper = NULL;
-	io->client = client;
-	io->callback = fn;
-	io->context = context;
+	io->client = io_req->client;
+	io->callback = io_req->notify.fn;
+	io->context = io_req->notify.context;
 
-	dispatch_io(rw, num_regions, where, dp, io, 0);
+	dispatch_io(io_req, num_regions, where, dp, io, 0);
 	return 0;
 }
 
@@ -474,11 +485,10 @@ int dm_io(struct dm_io_request *io_req, unsigned num_regions,
 		return r;
 
 	if (!io_req->notify.fn)
-		return sync_io(io_req->client, num_regions, where,
-			       io_req->bi_rw, &dp, sync_error_bits);
+		return sync_io(io_req, num_regions, where,
+				&dp, sync_error_bits);
 
-	return async_io(io_req->client, num_regions, where, io_req->bi_rw,
-			&dp, io_req->notify.fn, io_req->notify.context);
+	return async_io(io_req, num_regions, where, &dp);
 }
 EXPORT_SYMBOL(dm_io);
 

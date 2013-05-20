@@ -1425,11 +1425,24 @@ static int dm_request_based(struct mapped_device *md)
 static int dm_request(struct request_queue *q, struct bio *bio)
 {
 	struct mapped_device *md = q->queuedata;
+	struct dm_table *map = dm_get_live_table(md);
+	struct dm_target *ti = dm_table_find_target(map, bio->bi_sector);
+	int ret;
 
-	if (dm_request_based(md))
-		return dm_make_request(q, bio);
+	if (ti->type->mk_rq) {
+		ret = ti->type->mk_rq(ti, q, bio);
+		goto out;
+	}
 
-	return _dm_request(q, bio);
+	if (dm_request_based(md)) {
+		ret = dm_make_request(q, bio);
+		goto out;
+	}
+
+	ret = _dm_request(q, bio);
+out:
+	dm_table_put(map);
+	return ret;
 }
 
 void dm_dispatch_request(struct request *rq)

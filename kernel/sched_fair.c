@@ -1133,6 +1133,9 @@ check_preempt_tick(struct cfs_rq *cfs_rq, struct sched_entity *curr)
 		struct sched_entity *se = __pick_first_entity(cfs_rq);
 		s64 delta = curr->vruntime - se->vruntime;
 
+		if (delta < 0)
+			return;
+
 		if (delta > ideal_runtime)
 			resched_task(rq_of(cfs_rq)->curr);
 	}
@@ -1930,10 +1933,8 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
                update_cfs_shares(cfs_rq);
        }
 
-	if (!se) {
+	if (!se)
 		inc_nr_running(rq);
-		update_cpuacct_nr(p, cpu_of(rq), 0, 1);
-	}
 	hrtick_update(rq);
 }
 
@@ -1989,10 +1990,8 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		update_cfs_shares(cfs_rq);
 	}
 
-	if (!se) {
+	if (!se)
 		dec_nr_running(rq);
-		update_cpuacct_nr(p, cpu_of(rq), 0, -1);
-	}
 	hrtick_update(rq);
 }
 

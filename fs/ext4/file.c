@@ -89,11 +89,83 @@ ext4_unaligned_aio(struct inode *inode, const struct iovec *iov,
 }
 
 static ssize_t
+ext4_file_dio_write(struct kiocb *iocb, const struct iovec *iov,
+		    unsigned long nr_segs, loff_t pos)
+{
+	struct file *file = iocb->ki_filp;
+	struct inode *inode = file->f_mapping->host;
+	int unaligned_aio = 0;
+	ssize_t ret;
+	int overwrite = 0;
+	size_t length = iov_length(iov, nr_segs);
+
+	if (ext4_test_inode_flag(inode, EXT4_INODE_EXTENTS) &&
+	    !is_sync_kiocb(iocb))
+		unaligned_aio = ext4_unaligned_aio(inode, iov, nr_segs, pos);
+
+	/* Unaligned direct AIO must be serialized; see comment above */
+	if (unaligned_aio) {
+		static unsigned long unaligned_warn_time;
+
+		/* Warn about this once per day */
+		if (printk_timed_ratelimit(&unaligned_warn_time, 60*60*24*HZ))
+			ext4_msg(inode->i_sb, KERN_WARNING,
+				 "Unaligned AIO/DIO on inode %ld by %s; "
+				 "performance will be poor.",
+				 inode->i_ino, current->comm);
+
+		mutex_lock(&EXT4_I(inode)->i_aio_mutex);
+		ext4_aiodio_wait(inode);
+ 	}
+
+	BUG_ON(iocb->ki_pos != pos);
+
+	mutex_lock(&inode->i_mutex);
+
+	iocb->private = &overwrite;
+	/* check whether we do a DIO over write or not */
+	if (ext4_should_dioread_nolock(inode) && !unaligned_aio &&
+	    !file->f_mapping->nrpages && pos + length <= i_size_read(inode)) {
+		struct buffer_head bh;
+		struct ext4_map_blocks map;
+		unsigned int blkbits = inode->i_blkbits;
+		int err;
+		int len;
+
+		bh.b_state = 0;
+		map.m_flags = 0;
+		map.m_lblk = pos >> blkbits;
+		map.m_len = (EXT4_BLOCK_ALIGN(pos + length, blkbits) >> blkbits)
+			- map.m_lblk;
+		len = map.m_len;
+
+		err = ext4_get_blocks(NULL, inode, &map, &bh, 0);
+		if (err == len && (map.m_flags & EXT4_MAP_MAPPED))
+			overwrite = 1;
+	}
+
+	ret = __generic_file_aio_write(iocb, iov, nr_segs, &iocb->ki_pos);
+	mutex_unlock(&inode->i_mutex);
+
+	if (ret > 0 || ret == -EIOCBQUEUED) {
+		ssize_t err;
+
+		err = generic_write_sync(file, pos, ret);
+		if (err < 0 && ret > 0)
+			ret = err;
+	}
+
+	if (unaligned_aio)
+		mutex_unlock(&EXT4_I(inode)->i_aio_mutex);
+
+	return ret;
+}
+
+static ssize_t
 ext4_file_write(struct kiocb *iocb, const struct iovec *iov,
 		unsigned long nr_segs, loff_t pos)
 {
 	struct inode *inode = iocb->ki_filp->f_path.dentry->d_inode;
-	int unaligned_aio = 0;
 	int ret;
 
 	/*
@@ -113,29 +185,12 @@ ext4_file_write(struct kiocb *iocb, const struct iovec *iov,
 			nr_segs = iov_shorten((struct iovec *)iov, nr_segs,
 					      sbi->s_bitmap_maxbytes - pos);
 		}
-	} else if (unlikely((iocb->ki_filp->f_flags & O_DIRECT) &&
-		            !is_sync_kiocb(iocb)))
-		unaligned_aio = ext4_unaligned_aio(inode, iov, nr_segs, pos);
+	}
 
-	/* Unaligned direct AIO must be serialized; see comment above */
-	if (unaligned_aio) {
-		static unsigned long unaligned_warn_time;
-
-		/* Warn about this once per day */
-		if (printk_timed_ratelimit(&unaligned_warn_time, 60*60*24*HZ))
-			ext4_msg(inode->i_sb, KERN_WARNING,
-				 "Unaligned AIO/DIO on inode %ld by %s; "
-				 "performance will be poor.",
-				 inode->i_ino, current->comm);
-
-		mutex_lock(&EXT4_I(inode)->i_aio_mutex);
-		ext4_aiodio_wait(inode);
- 	}
-
-	ret = generic_file_aio_write(iocb, iov, nr_segs, pos);
-
-	if (unaligned_aio)
-		mutex_unlock(&EXT4_I(inode)->i_aio_mutex);
+	if (unlikely(iocb->ki_filp->f_flags & O_DIRECT))
+		ret = ext4_file_dio_write(iocb, iov, nr_segs, pos);
+	else
+		ret = generic_file_aio_write(iocb, iov, nr_segs, pos);
 
 	return ret;
 }

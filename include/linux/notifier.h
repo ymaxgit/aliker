@@ -208,6 +208,7 @@ static inline int notifier_to_errno(int ret)
 #define NETDEV_BONDING_DESLAVE	0x0011
 #define NETDEV_NOTIFY_PEERS	0x0013
 #define NETDEV_JOIN		0x0014
+#define NETDEV_POST_INIT	0x0015
 
 #define SYS_DOWN	0x0001	/* Notify of system down */
 #define SYS_RESTART	SYS_DOWN

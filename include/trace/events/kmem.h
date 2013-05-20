@@ -877,44 +877,6 @@ TRACE_EVENT(mm_vmscan_direct_reclaim_end,
 	TP_printk("nr_reclaimed=%lu", __entry->nr_reclaimed)
 	);
 
-TRACE_EVENT(mm_cgroup_direct_reclaim_begin,
-
-	TP_PROTO(void *memcg, gfp_t gfp_flags),
-
-	TP_ARGS(memcg, gfp_flags),
-
-	TP_STRUCT__entry(
-		__field(        void *,    memcg        )
-		__field(        gfp_t,  gfp_flags       )
-	),
-
-	TP_fast_assign(
-		__entry->memcg          = memcg;
-		__entry->gfp_flags      = gfp_flags;
-	),
-
-	TP_printk("memcg=%p gfp_flags=%s",
-		__entry->memcg,
-		show_gfp_flags(__entry->gfp_flags))
-	);
-
-TRACE_EVENT(mm_cgroup_direct_reclaim_end,
-
-	TP_PROTO(void *memcg),
-
-	TP_ARGS(memcg),
-
-	TP_STRUCT__entry(
-		__field(        void *,  memcg    )
-	),
-
-	TP_fast_assign(
-		__entry->memcg = memcg;
-	),
-
-	TP_printk("memcg=%p", __entry->memcg)
-	);
-
 TRACE_EVENT(mm_vmscan_lru_isolate,
 
 	TP_PROTO(int order,

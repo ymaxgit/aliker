@@ -462,6 +462,7 @@ static int create_log_context(struct dm_dirty_log *log, struct dm_target *ti,
 			kfree(lc);
 			return r;
 		}
+		lc->io_req.only_create_bio = 0;
 
 		lc->disk_header = vmalloc(buf_size);
 		if (!lc->disk_header) {

@@ -352,11 +352,15 @@ mext_out:
 
 	case FITRIM:
 	{
+		struct request_queue *q = bdev_get_queue(sb->s_bdev);
 		struct fstrim_range range;
 		int ret = 0;
 
 		if (!capable(CAP_SYS_ADMIN))
 			return -EPERM;
+
+		if (!blk_queue_discard(q))
+			return -EOPNOTSUPP;
 
 		if (EXT4_HAS_RO_COMPAT_FEATURE(sb,
 			       EXT4_FEATURE_RO_COMPAT_BIGALLOC)) {
@@ -369,6 +373,8 @@ mext_out:
 		    sizeof(range)))
 			return -EFAULT;
 
+		range.minlen = max((unsigned int)range.minlen,
+				   q->limits.discard_granularity);
 		ret = ext4_trim_fs(sb, &range);
 		if (ret < 0)
 			return ret;
@@ -445,6 +451,8 @@ long ext4_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		set_fs(old_fs);
 		return err;
 	}
+	case FITRIM:
+		break;
 	default:
 		return -ENOIOCTLCMD;
 	}

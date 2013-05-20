@@ -49,6 +49,8 @@ typedef int (*dm_map_fn) (struct dm_target *ti, struct bio *bio,
 			  union map_info *map_context);
 typedef int (*dm_map_request_fn) (struct dm_target *ti, struct request *clone,
 				  union map_info *map_context);
+typedef int (*dm_make_request_fn) (struct dm_target *ti,
+				struct request_queue *q, struct bio *bio);
 
 /*
  * Returns:
@@ -140,6 +142,7 @@ struct target_type {
 	dm_dtr_fn dtr;
 	dm_map_fn map;
 	dm_map_request_fn map_rq;
+	dm_make_request_fn mk_rq;
 	dm_endio_fn end_io;
 	dm_request_endio_fn rq_end_io;
 	dm_flush_fn flush;

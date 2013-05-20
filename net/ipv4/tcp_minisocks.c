@@ -279,9 +279,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 
 	tcp_death_row.period = sysctl_tcp_tw_timeout / INET_TWDR_TWKILL_SLOTS;
 
-	if (sk->sk_friend)
-		goto out;
-
 	if (tcp_death_row.sysctl_tw_recycle && tp->rx_opt.ts_recent_stamp)
 		recycle_ok = icsk->icsk_af_ops->remember_stamp(sk);
 
@@ -360,7 +357,6 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	}
 
 	tcp_update_metrics(sk);
-out:
 	tcp_done(sk);
 }
 
@@ -423,7 +419,7 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		 * algorithms that we must have the following bandaid to talk
 		 * efficiently to them.  -DaveM
 		 */
-		newtp->snd_cwnd = 2;
+		newtp->snd_cwnd = TCP_INIT_CWND;
 		newtp->snd_cwnd_cnt = 0;
 		newtp->bytes_acked = 0;
 
@@ -655,6 +651,10 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		inet_rsk(req)->acked = 1;
 		return NULL;
 	}
+	if (tmp_opt.saw_tstamp && tmp_opt.rcv_tsecr)
+		tcp_rsk(req)->snt_synack = tmp_opt.rcv_tsecr;
+	else if (req->retrans) /* don't take RTT sample if retrans && ~TS */
+		tcp_rsk(req)->snt_synack = 0;
 
 	/* OK, ACK is valid, create big socket and
 	 * feed this segment to it. It will repeat all

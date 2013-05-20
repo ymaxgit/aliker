@@ -161,6 +161,12 @@ extern struct sctp_globals {
 	int max_retrans_path;
 	int max_retrans_init;
 
+	/* Potentially-Failed.Max.Retrans sysctl value
+	 * taken from:
+	 * http://tools.ietf.org/html/draft-nishida-tsvwg-sctp-failover-05
+	 */
+	int pf_retrans;
+
 	/*
 	 * Policy for preforming sctp/socket accounting
 	 * 0   - do socket level accounting, all assocs share sk_sndbuf
@@ -250,6 +256,7 @@ extern struct sctp_globals {
 #define sctp_sndbuf_policy	 	(sctp_globals.sndbuf_policy)
 #define sctp_rcvbuf_policy	 	(sctp_globals.rcvbuf_policy)
 #define sctp_max_retrans_path		(sctp_globals.max_retrans_path)
+#define sctp_pf_retrans			(sctp_globals.pf_retrans)
 #define sctp_max_retrans_init		(sctp_globals.max_retrans_init)
 #define sctp_sack_timeout		(sctp_globals.sack_timeout)
 #define sctp_hb_interval		(sctp_globals.hb_interval)
@@ -568,12 +575,13 @@ struct sctp_af {
 					 int __user *optlen);
 	struct dst_entry *(*get_dst)	(struct sctp_association *asoc,
 					 union sctp_addr *daddr,
-					 union sctp_addr *saddr);
+					 union sctp_addr *saddr,
+					 struct flowi *fl,
+					 struct sock *sk);
 	void		(*get_saddr)	(struct sctp_sock *sk,
-					 struct sctp_association *asoc,
-					 struct dst_entry *dst,
+					 struct sctp_transport *t,
 					 union sctp_addr *daddr,
-					 union sctp_addr *saddr);
+					 struct flowi *fl);
 	void		(*copy_addrlist) (struct list_head *,
 					  struct net_device *);
 	void		(*dst_saddr)	(union sctp_addr *saddr,
@@ -900,6 +908,8 @@ struct sctp_transport {
 		/* Is this structure kfree()able? */
 		malloced:1;
 
+	/* Has this transport moved the ctsn since we last sacked */
+	__u32 sack_generation;
 
 	/* This is the peer's IP address and port. */
 	union sctp_addr ipaddr;
@@ -974,10 +984,15 @@ struct sctp_transport {
 
 	/* This is the max_retrans value for the transport and will
 	 * be initialized from the assocs value.  This can be changed
-	 * using SCTP_SET_PEER_ADDR_PARAMS socket option.
+	 * using the SCTP_SET_PEER_ADDR_PARAMS socket option.
 	 */
 	__u16 pathmaxrxt;
 
+	/* This is the partially failed retrans value for the transport
+	 * and will be initialized from the assocs value.  This can be changed
+	 * using the SCTP_PEER_ADDR_THLDS socket option
+	 */
+	int pf_retrans;
 	/* PMTU	      : The current known path MTU.  */
 	__u32 pathmtu;
 
@@ -1063,7 +1078,7 @@ void sctp_transport_set_owner(struct sctp_transport *,
 			      struct sctp_association *);
 void sctp_transport_route(struct sctp_transport *, union sctp_addr *,
 			  struct sctp_sock *);
-void sctp_transport_pmtu(struct sctp_transport *);
+void sctp_transport_pmtu(struct sctp_transport *, struct sock *sk);
 void sctp_transport_free(struct sctp_transport *);
 void sctp_transport_reset_timers(struct sctp_transport *);
 void sctp_transport_hold(struct sctp_transport *);
@@ -1569,6 +1584,7 @@ struct sctp_association {
 		 */
 		__u8    sack_needed;     /* Do we need to sack the peer? */
 		__u32	sack_cnt;
+		__u32	sack_generation;
 
 		/* These are capabilities which our peer advertised.  */
 		__u8	ecn_capable:1,	    /* Can peer do ECN? */
@@ -1644,6 +1660,12 @@ struct sctp_association {
 	 * modified by the SCTP_ASSOCINFO socket option.
 	 */
 	int max_retrans;
+
+	/* This is the partially failed retrans value for the transport
+	 * and will be initialized from the assocs value.  This can be
+	 * changed using the SCTP_PEER_ADDR_THLDS socket option
+	 */
+	int pf_retrans;
 
 	/* Maximum number of times the endpoint will retransmit INIT  */
 	__u16 max_init_attempts;

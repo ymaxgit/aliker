@@ -43,7 +43,6 @@
 #include "xattr.h"
 #include "acl.h"
 #include "namei.h"
-#include "subtree.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ext3.h>
@@ -804,9 +803,6 @@ static const struct super_operations ext3_sops = {
 	.quota_write	= ext3_quota_write,
 #endif
 	.bdev_try_to_free_page = bdev_try_to_free_page,
-#ifdef CONFIG_EXT3_FS_SUBTREE
-	.get_subtree	= ext3_get_subtree,
-#endif
 };
 
 static const struct export_operations ext3_export_ops = {

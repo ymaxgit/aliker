@@ -2088,27 +2088,6 @@ static inline void kmemleak_load_module(struct module *mod, Elf_Ehdr *hdr,
 }
 #endif
 
-/*
- * Module verification enabled ?
- */
-static int module_verify_enabled __read_mostly  = 0;
-
-/*
- * Enable / Disable Module verification.
- */
-static int __init setup_module_verify(char *str)
-{
-	if (!strcmp(str, "off"))
-		module_verify_enabled = 0;
-	else if (!strcmp(str, "on"))
-		module_verify_enabled = 1;
-	else
-		return 0;
-	return 1;
-}
-
-__setup("modverify=", setup_module_verify);
-
 /* Allocate and load the module: note that size of section 0 is always
    zero, and we rely on this for optional sections. */
 static noinline struct module *load_module(void __user *umod,
@@ -2158,13 +2137,11 @@ static noinline struct module *load_module(void __user *umod,
 		goto free_hdr;
 	}
 
-	if (module_verify_enabled) {
-		/* Verify the module's contents */
-		gpgsig_ok = 0;
-		err = module_verify(hdr, len, &gpgsig_ok);
-		if (err < 0)
-			goto free_hdr;
-	}
+	/* Verify the module's contents */
+	gpgsig_ok = 0;
+	err = module_verify(hdr, len, &gpgsig_ok);
+	if (err < 0)
+		goto free_hdr;
 
 	/* Convenience variables */
 	sechdrs = (void *)hdr + hdr->e_shoff;

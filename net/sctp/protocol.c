@@ -463,33 +463,34 @@ static sctp_scope_t sctp_v4_scope(union sctp_addr *addr)
  */
 static struct dst_entry *sctp_v4_get_dst(struct sctp_association *asoc,
 					 union sctp_addr *daddr,
-					 union sctp_addr *saddr)
+					 union sctp_addr *saddr,
+					 struct flowi *fl,
+					 struct sock *sk)
 {
 	struct rtable *rt;
-	struct flowi fl;
 	struct sctp_bind_addr *bp;
 	struct sctp_sockaddr_entry *laddr;
 	struct dst_entry *dst = NULL;
 	union sctp_addr dst_saddr;
 
-	memset(&fl, 0x0, sizeof(struct flowi));
-	fl.fl4_dst  = daddr->v4.sin_addr.s_addr;
-	fl.fl_ip_dport = daddr->v4.sin_port;
-	fl.proto = IPPROTO_SCTP;
+	memset(fl, 0x0, sizeof(struct flowi));
+	fl->fl4_dst  = daddr->v4.sin_addr.s_addr;
+	fl->fl_ip_dport = daddr->v4.sin_port;
+	fl->proto = IPPROTO_SCTP;
 	if (asoc) {
-		fl.fl4_tos = RT_CONN_FLAGS(asoc->base.sk);
-		fl.oif = asoc->base.sk->sk_bound_dev_if;
-		fl.fl_ip_sport = htons(asoc->base.bind_addr.port);
+		fl->fl4_tos = RT_CONN_FLAGS(asoc->base.sk);
+		fl->oif = asoc->base.sk->sk_bound_dev_if;
+		fl->fl_ip_sport = htons(asoc->base.bind_addr.port);
 	}
 	if (saddr) {
-		fl.fl4_src = saddr->v4.sin_addr.s_addr;
-		fl.fl_ip_sport = saddr->v4.sin_port;
+		fl->fl4_src = saddr->v4.sin_addr.s_addr;
+		fl->fl_ip_sport = saddr->v4.sin_port;
 	}
 
 	SCTP_DEBUG_PRINTK("%s: DST:%pI4, SRC:%pI4 - ",
-			  __func__, &fl.fl4_dst, &fl.fl4_src);
+			  __func__, &fl->fl4_dst, &fl->fl4_src);
 
-	if (!ip_route_output_key(&init_net, &rt, &fl)) {
+	if (!ip_route_output_key(&init_net, &rt, fl)) {
 		dst = &rt->u.dst;
 	}
 
@@ -531,9 +532,9 @@ static struct dst_entry *sctp_v4_get_dst(struct sctp_association *asoc,
 			continue;
 		if ((laddr->state == SCTP_ADDR_SRC) &&
 		    (AF_INET == laddr->a.sa.sa_family)) {
-			fl.fl4_src = laddr->a.v4.sin_addr.s_addr;
-			fl.fl_ip_sport = laddr->a.v4.sin_port;
-			if (!ip_route_output_key(&init_net, &rt, &fl)) {
+			fl->fl4_src = laddr->a.v4.sin_addr.s_addr;
+			fl->fl_ip_sport = laddr->a.v4.sin_port;
+			if (!ip_route_output_key(&init_net, &rt, fl)) {
 				dst = &rt->u.dst;
 				goto out_unlock;
 			}
@@ -556,19 +557,15 @@ out:
  * to cache it separately and hence this is an empty routine.
  */
 static void sctp_v4_get_saddr(struct sctp_sock *sk,
-			      struct sctp_association *asoc,
-			      struct dst_entry *dst,
+			      struct sctp_transport *t,
 			      union sctp_addr *daddr,
-			      union sctp_addr *saddr)
+			      struct flowi *fl)
 {
-	struct rtable *rt = (struct rtable *)dst;
-
-	if (!asoc)
-		return;
+	union sctp_addr *saddr = &t->saddr;
+        struct rtable *rt = (struct rtable *)t->dst;
 
 	if (rt) {
 		saddr->v4.sin_family = AF_INET;
-		saddr->v4.sin_port = htons(asoc->base.bind_addr.port);
 		saddr->v4.sin_addr.s_addr = rt->rt_src;
 	}
 }
@@ -948,7 +945,6 @@ static struct sctp_af sctp_af_inet = {
 	.to_sk_daddr	   = sctp_v4_to_sk_daddr,
 	.from_addr_param   = sctp_v4_from_addr_param,
 	.to_addr_param	   = sctp_v4_to_addr_param,
-	.dst_saddr	   = sctp_v4_dst_saddr,
 	.cmp_addr	   = sctp_v4_cmp_addr,
 	.addr_valid	   = sctp_v4_addr_valid,
 	.inaddr_any	   = sctp_v4_inaddr_any,
@@ -1155,12 +1151,19 @@ SCTP_STATIC __init int sctp_init(void)
 	sctp_max_instreams    		= SCTP_DEFAULT_INSTREAMS;
 	sctp_max_outstreams   		= SCTP_DEFAULT_OUTSTREAMS;
 
+	/* This is a RHEL6 specific setting.  Upstream defaults the PF feature
+	 * to on.  In RHEL we should default it off to avoid unintentionally
+	 * altering the behavior of our install base
+	 */
+	sctp_pf_retrans			= INT_MAX;
+
 	/* Initialize handle used for association ids. */
 	idr_init(&sctp_assocs_id);
 
 	/* Set the pressure threshold to be a fraction of global memory that
 	 * is up to 1/2 at 256 MB, decreasing toward zero with the amount of
-	 * memory, with a floor of 128 pages.
+	 * memory, with a floor of 128 pages, and a ceiling that prevents an
+	 * integer overflow.
 	 * Note this initalizes the data in sctpv6_prot too
 	 * Unabashedly stolen from tcp_init
 	 */
@@ -1168,6 +1171,7 @@ SCTP_STATIC __init int sctp_init(void)
 	limit = min(nr_pages, 1UL<<(28-PAGE_SHIFT)) >> (20-PAGE_SHIFT);
 	limit = (limit * (nr_pages >> (20-PAGE_SHIFT))) >> (PAGE_SHIFT-11);
 	limit = max(limit, 128UL);
+	limit = min(limit, INT_MAX * 4UL / 3 / 2);
 	sysctl_sctp_mem[0] = limit / 4 * 3;
 	sysctl_sctp_mem[1] = limit;
 	sysctl_sctp_mem[2] = sysctl_sctp_mem[0] * 2;
@@ -1177,7 +1181,7 @@ SCTP_STATIC __init int sctp_init(void)
 	max_share = min(4UL*1024*1024, limit);
 
 	sysctl_sctp_rmem[0] = SK_MEM_QUANTUM; /* give each asoc 1 page min */
-	sysctl_sctp_rmem[1] = (1500 *(sizeof(struct sk_buff) + 1));
+	sysctl_sctp_rmem[1] = 1500 * SKB_TRUESIZE(1);
 	sysctl_sctp_rmem[2] = max(sysctl_sctp_rmem[1], max_share);
 
 	sysctl_sctp_wmem[0] = SK_MEM_QUANTUM;

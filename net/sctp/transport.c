@@ -65,6 +65,8 @@ static struct sctp_transport *sctp_transport_init(struct sctp_transport *peer,
 	peer->af_specific = sctp_get_af_specific(addr->sa.sa_family);
 	memset(&peer->saddr, 0, sizeof(union sctp_addr));
 
+	peer->sack_generation = 0;
+
 	/* From 6.3.1 RTO Calculation:
 	 *
 	 * C1) Until an RTT measurement has been made for a packet sent to the
@@ -82,6 +84,7 @@ static struct sctp_transport *sctp_transport_init(struct sctp_transport *peer,
 
 	/* Initialize the default path max_retrans.  */
 	peer->pathmaxrxt  = sctp_max_retrans_path;
+	peer->pf_retrans  = sctp_pf_retrans;
 
 	INIT_LIST_HEAD(&peer->transmitted);
 	INIT_LIST_HEAD(&peer->send_ready);
@@ -212,11 +215,15 @@ void sctp_transport_set_owner(struct sctp_transport *transport,
 }
 
 /* Initialize the pmtu of a transport. */
-void sctp_transport_pmtu(struct sctp_transport *transport)
+void sctp_transport_pmtu(struct sctp_transport *transport, struct sock *sk)
 {
 	struct dst_entry *dst;
+	struct flowi fl;
 
-	dst = transport->af_specific->get_dst(NULL, &transport->ipaddr, NULL);
+	dst = transport->af_specific->get_dst(transport->asoc,
+					      &transport->ipaddr,
+					      &transport->saddr,
+					      &fl, sk);
 
 	if (dst) {
 		transport->pathmtu = dst_mtu(dst);
@@ -274,15 +281,16 @@ void sctp_transport_route(struct sctp_transport *transport,
 	struct sctp_af *af = transport->af_specific;
 	union sctp_addr *daddr = &transport->ipaddr;
 	struct dst_entry *dst;
+	struct flowi fl;
 
-	dst = af->get_dst(asoc, daddr, saddr);
+	dst = af->get_dst(asoc, daddr, saddr, &fl, sctp_opt2sk(opt));
+	transport->dst = dst;
 
 	if (saddr)
 		memcpy(&transport->saddr, saddr, sizeof(union sctp_addr));
 	else
-		af->get_saddr(opt, asoc, dst, daddr, &transport->saddr);
+		af->get_saddr(opt, transport, daddr, &fl);
 
-	transport->dst = dst;
 	if ((transport->param_flags & SPP_PMTUD_DISABLE) && transport->pathmtu) {
 		return;
 	}
@@ -605,7 +613,8 @@ unsigned long sctp_transport_timeout(struct sctp_transport *t)
 {
 	unsigned long timeout;
 	timeout = t->rto + sctp_jitter(t->rto);
-	if (t->state != SCTP_UNCONFIRMED)
+	if ((t->state != SCTP_UNCONFIRMED) &&
+	    (t->state != SCTP_PF))
 		timeout += t->hbinterval;
 	timeout += jiffies;
 	return timeout;

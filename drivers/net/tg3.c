@@ -69,12 +69,6 @@
 
 #include "tg3.h"
 
-#define CTL1000_AS_MASTER   0x0800
-#define CTL1000_ENABLE_MASTER   0x1000
-#define ETH_TEST_FL_EXTERNAL_LB  1 << 2
-#define ETH_TEST_FL_EXTERNAL_LB_DONE 1 << 3
-
-
 /* Functions & macros to verify TG3_FLAGS types */
 
 static inline int _tg3_flag(enum TG3_FLAGS flag, unsigned long *bits)

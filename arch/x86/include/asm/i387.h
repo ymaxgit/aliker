@@ -239,7 +239,7 @@ static inline int fxrstor_checking(struct i387_fxsave_struct *fx)
 #ifdef CONFIG_SMP
 #define safe_address (__per_cpu_offset[0])
 #else
-#define safe_address (__get_cpu_var(kernel_cpustat).cpustat[CPUTIME_USER])
+#define safe_address (kstat_cpu(0).cpustat.user)
 #endif
 
 /*

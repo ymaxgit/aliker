@@ -310,56 +310,6 @@ struct tcp_splice_state {
 };
 
 /*
- * Validate friendp, if not a friend return 0, else if friend is also a
- * friend return 1, else friendp points to a listen()er so wait for our
- * friend to be ready then update friendp with pointer to the real friend
- * and return 1, else an error has occurred so return a -errno.
- */
-static inline int tcp_friend_validate(struct sock *sk, struct sock **friendp,
-			      long *timeo)
-{
-	struct sock *friend = *friendp;
-
-	if (!friend)
-		return 0;
-	if (unlikely(!friend->sk_friend)) {
-		/* Friendship not complete, wait? */
-		int err;
-
-		if (!timeo)
-			return -EAGAIN;
-		err = sk_stream_wait_friend(sk, timeo);
-		if (err < 0)
-			return err;
-		*friendp = sk->sk_friend;
-	}
-	return 1;
-}
-
-static inline int tcp_friend_send_lock(struct sock *friend)
-{
-	int err = 0;
-
-	spin_lock_bh(&friend->sk_lock.slock);
-	if (unlikely(friend->sk_shutdown & RCV_SHUTDOWN)) {
-		spin_unlock_bh(&friend->sk_lock.slock);
-		err = -ECONNRESET;
-	}
-
-	return err;
-}
-
-static inline void tcp_friend_recv_lock(struct sock *friend)
-{
-	spin_lock_bh(&friend->sk_lock.slock);
-}
-
-static void tcp_friend_unlock(struct sock *friend)
-{
-	spin_unlock_bh(&friend->sk_lock.slock);
-}
-
-/*
  * Pressure flag: try to collapse.
  * Technical note: it is used by multiple contexts non atomically.
  * All the __sk_mem_schedule() is of this nature: accounting
@@ -560,76 +510,6 @@ int tcp_ioctl(struct sock *sk, int cmd, unsigned long arg)
 	return put_user(answ, (int __user *)arg);
 }
 
-/*
- * Friend receive_queue tail skb space? If true, set tail_inuse.
- * Else if RCV_SHUTDOWN, return *copy = -ECONNRESET.
- */
-static inline struct sk_buff *tcp_friend_tail(struct sock *friend, int *copy)
-{
-	struct sk_buff	*skb = NULL;
-	int		sz = 0;
-
-	if (skb_peek_tail(&friend->sk_receive_queue)) {
-		sz = tcp_friend_send_lock(friend);
-		if (!sz) {
-			skb = skb_peek_tail(&friend->sk_receive_queue);
-			if (skb && skb->friend) {
-				if (!*copy)
-					sz = skb_tailroom(skb);
-				else {
-					sz = *copy - skb->len;
-					if (sz < 0)
-						sz = 0;
-				}
-				if (sz > 0)
-					TCP_FRIEND_CB(TCP_SKB_CB(skb))->
-							tail_inuse = true;
-			}
-			tcp_friend_unlock(friend);
-		}
-	}
-
-	*copy = sz;
-	return skb;
-}
-
-static inline void tcp_friend_seq(struct sock *sk, int copy, int charge)
-{
-	struct sock	*friend = sk->sk_friend;
-	struct tcp_sock *tp = tcp_sk(friend);
-
-	if (charge) {
-		sk_mem_charge(friend, charge);
-		atomic_add(charge, &friend->sk_rmem_alloc);
-	}
-	tp->rcv_nxt += copy;
-	tp->rcv_wup += copy;
-	tcp_friend_unlock(friend);
-
-	tp = tcp_sk(sk);
-	tp->snd_nxt += copy;
-	tp->pushed_seq += copy;
-	tp->snd_una += copy;
-	tp->snd_up += copy;
-}
-
-static inline bool tcp_friend_push(struct sock *sk, struct sk_buff *skb)
-{
-	struct sock	*friend = sk->sk_friend;
-	int		wait = false;
-
-	skb_set_owner_r(skb, friend);
-	__skb_queue_tail(&friend->sk_receive_queue, skb);
-	if (!sk_rmem_schedule(friend, skb->truesize))
-		wait = true;
-
-	tcp_friend_seq(sk, skb->len, 0);
-	if (skb == skb_peek(&friend->sk_receive_queue))
-		friend->sk_data_ready(friend, 0);
-
-	return wait;
-}
-
 static inline void tcp_mark_push(struct tcp_sock *tp, struct sk_buff *skb)
 {
 	TCP_SKB_CB(skb)->flags |= TCPCB_FLAG_PSH;
@@ -646,13 +526,8 @@ static inline void skb_entail(struct sock *sk, struct sk_buff *skb)
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
 
-	tcb->seq     = tcb->end_seq = tp->write_seq;
-	if (sk->sk_friend) {
-		skb->friend = sk;
-		TCP_FRIEND_CB(tcb)->tail_inuse = false;
-		return;
-	}
 	skb->csum    = 0;
+	tcb->seq     = tcb->end_seq = tp->write_seq;
 	tcb->flags   = TCPCB_FLAG_ACK;
 	tcb->sacked  = 0;
 	skb_header_release(skb);
@@ -675,10 +550,7 @@ static inline void tcp_push(struct sock *sk, int flags, int mss_now,
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (sk->sk_friend) {
-		if (skb_peek(&sk->sk_friend->sk_receive_queue))
-			sk->sk_friend->sk_data_ready(sk->sk_friend, 0);
-	} else if (tcp_send_head(sk)) {
+	if (tcp_send_head(sk)) {
 		struct sk_buff *skb = tcp_write_queue_tail(sk);
 		if (!(flags & MSG_MORE) || forced_push(tp))
 			tcp_mark_push(tp, skb);
@@ -808,19 +680,6 @@ ssize_t tcp_splice_read(struct socket *sock, loff_t *ppos,
 	return ret;
 }
 
-static inline struct sk_buff *tcp_friend_alloc_skb(struct sock *sk, int size)
-{
-	struct sk_buff *skb;
-
-	skb = alloc_skb(size, sk->sk_allocation);
-	if (!skb) {
-		sk->sk_prot->enter_memory_pressure(sk);
-		sk_stream_moderate_sndbuf(sk);
-	}
-
-	return skb;
-}
-
 struct sk_buff *sk_stream_alloc_skb(struct sock *sk, int size, gfp_t gfp)
 {
 	struct sk_buff *skb;
@@ -877,75 +736,29 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 	return max(xmit_size_goal, mss_now);
 }
 
-static unsigned int tcp_friend_xmit_size_goal(struct sock *sk, int size_goal)
-{
-	u32 size = SKB_DATA_ALIGN(size_goal);
-	u32 overhead = sizeof(struct skb_shared_info) + sizeof(struct sk_buff);
-
-	/*
-	 * If alloc >= largest skb use largest order, else check
-	 * for optimal tail fill size, else use largest order.
-	 */
-	if (size >= SKB_MAX_ORDER(0, 4))
-		size = SKB_MAX_ORDER(0, 4);
-	else if (size <= (SKB_MAX_ORDER(0, 0) >> 3))
-		size = SKB_MAX_ORDER(0, 0);
-	else if (size <= (SKB_MAX_ORDER(0, 1) >> 3))
-		size = SKB_MAX_ORDER(0, 1);
-	else if (size <= (SKB_MAX_ORDER(0, 0) >> 1))
-		size = SKB_MAX_ORDER(0, 0);
-	else if (size <= (SKB_MAX_ORDER(0, 1) >> 1))
-		size = SKB_MAX_ORDER(0, 1);
-	else if (size <= (SKB_MAX_ORDER(0, 2) >> 1))
-		size = SKB_MAX_ORDER(0, 2);
-	else if (size <= (SKB_MAX_ORDER(0, 3) >> 1))
-		size = SKB_MAX_ORDER(0, 3);
-	else
-		size = SKB_MAX_ORDER(0, 4);
-
-	/* At least 2 true sized in sk_buf */
-	if (size + overhead > (sk_sndbuf_get(sk) >> 1))
-		size = (sk_sndbuf_get(sk) >> 1) - overhead;
-
-	return size;
-}
-
 static int tcp_send_mss(struct sock *sk, int *size_goal, int flags)
 {
 	int mss_now;
-	int tmp;
 
-	if (sk->sk_friend) {
-		mss_now = tcp_friend_xmit_size_goal(sk, *size_goal);
-		tmp = mss_now;
-	} else {
-		mss_now = tcp_current_mss(sk);
-		tmp = tcp_xmit_size_goal(sk, mss_now, !(flags & MSG_OOB));
-	}
+	mss_now = tcp_current_mss(sk);
+	*size_goal = tcp_xmit_size_goal(sk, mss_now, !(flags & MSG_OOB));
 
-	*size_goal = tmp;
 	return mss_now;
 }
 
 static ssize_t do_tcp_sendpages(struct sock *sk, struct page **pages, int poffset,
 			 size_t psize, int flags)
 {
-	struct sock *friend = sk->sk_friend;
 	struct tcp_sock *tp = tcp_sk(sk);
-	int mss_now, size_goal = psize;
+	int mss_now, size_goal;
 	int err;
 	ssize_t copied;
 	long timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
-	struct tcp_skb_cb *tcb;
 
 	/* Wait for a connection to finish. */
 	if ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
 		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0)
 			goto out_err;
-
-	err = tcp_friend_validate(sk, &friend, &timeo);
-	if (err < 0)
-		goto out_err;
 
 	clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
 
@@ -963,40 +776,18 @@ static ssize_t do_tcp_sendpages(struct sock *sk, struct page **pages, int poffse
 		int offset = poffset % PAGE_SIZE;
 		int size = min_t(size_t, psize, PAGE_SIZE - offset);
 
-		if (friend) {
-			copy = size_goal;
-			skb = tcp_friend_tail(friend, &copy);
-			if (copy < 0) {
-				sk->sk_err = -copy;
-				err = -EPIPE;
-				goto out_err;
-			}
-		} else if (!tcp_send_head(sk)) {
-			skb = NULL;
-			copy = 0;
-		} else {
-			skb = tcp_write_queue_tail(sk);
-			copy = size_goal - skb->len;
-		}
-
-		if (copy <= 0) {
+		if (!tcp_send_head(sk) || (copy = size_goal - skb->len) <= 0) {
 new_segment:
 			if (!sk_stream_memory_free(sk))
 				goto wait_for_sndbuf;
 
-			if (friend)
-				skb = tcp_friend_alloc_skb(sk, 0);
-			else
-				skb = sk_stream_alloc_skb(sk, 0,
-							sk->sk_allocation);
-
+			skb = sk_stream_alloc_skb(sk, 0, sk->sk_allocation);
 			if (!skb)
 				goto wait_for_memory;
 
 			skb_entail(sk, skb);
 			copy = size_goal;
 		}
-		tcb = TCP_SKB_CB(skb);
 
 		if (copy > size)
 			copy = size;
@@ -1004,14 +795,10 @@ new_segment:
 		i = skb_shinfo(skb)->nr_frags;
 		can_coalesce = skb_can_coalesce(skb, i, page, offset);
 		if (!can_coalesce && i >= MAX_SKB_FRAGS) {
-			if (friend) {
-				if (TCP_FRIEND_CB(tcb)->tail_inuse)
-					TCP_FRIEND_CB(tcb)->tail_inuse = false;
-			} else
-				tcp_mark_push(tp, skb);
+			tcp_mark_push(tp, skb);
 			goto new_segment;
 		}
-		if (!friend && !sk_wmem_schedule(sk, copy))
+		if (!sk_wmem_schedule(sk, copy))
 			goto wait_for_memory;
 
 		if (can_coalesce) {
@@ -1024,40 +811,19 @@ new_segment:
 		skb->len += copy;
 		skb->data_len += copy;
 		skb->truesize += copy;
-		tp->write_seq += copy;
-
-		copied += copy;
-		poffset += copy;
-		psize -= copy;
-
-		if (friend) {
-			err = tcp_friend_send_lock(friend);
-			if (err) {
-				sk->sk_err = -err;
-				err = -EPIPE;
-				goto out_err;
-			}
-			tcb->end_seq += copy;
-			if (TCP_FRIEND_CB(tcb)->tail_inuse) {
-				TCP_FRIEND_CB(tcb)->tail_inuse = false;
-				tcp_friend_seq(sk, copy, copy);
-			} else {
-				if (tcp_friend_push(sk, skb))
-					goto wait_for_sndbuf;
-			}
-			if (!psize)
-				goto out;
-			continue;
-		}
-
-		tcb->end_seq += copy;
-		skb_shinfo(skb)->gso_segs = 0;
-
 		sk->sk_wmem_queued += copy;
 		sk_mem_charge(sk, copy);
 		skb->ip_summed = CHECKSUM_PARTIAL;
+		tp->write_seq += copy;
+		TCP_SKB_CB(skb)->end_seq += copy;
+		skb_shinfo(skb)->gso_segs = 0;
 
-		if (!psize)
+		if (!copied)
+			TCP_SKB_CB(skb)->flags &= ~TCPCB_FLAG_PSH;
+
+		copied += copy;
+		poffset += copy;
+		if (!(psize -= copy))
 			goto out;
 
 		if (skb->len < size_goal || (flags & MSG_OOB))
@@ -1079,8 +845,7 @@ wait_for_memory:
 		if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 			goto do_error;
 
-		if (!friend)
-			mss_now = tcp_send_mss(sk, &size_goal, flags);
+		mss_now = tcp_send_mss(sk, &size_goal, flags);
 	}
 
 out:
@@ -1142,13 +907,11 @@ int tcp_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 {
 	struct sock *sk = sock->sk;
 	struct iovec *iov;
-	struct sock *friend = sk->sk_friend;
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct sk_buff *skb;
-	struct tcp_skb_cb *tcb;
 	int iovlen, flags;
-	int err, copied = 0;
-	int mss_now = 0, size_goal = size;
+	int mss_now, size_goal;
+	int err, copied;
 	long timeo;
 
 	lock_sock(sk);
@@ -1161,10 +924,6 @@ int tcp_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 	if ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
 		if ((err = sk_stream_wait_connect(sk, &timeo)) != 0)
 			goto out_err;
-
-	err = tcp_friend_validate(sk, &friend, &timeo);
-	if (err < 0)
-		goto out;
 
 	/* This should be in poll */
 	clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
@@ -1191,39 +950,22 @@ int tcp_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 			int max = size_goal;
 
 			skb = tcp_write_queue_tail(sk);
-			if (friend) {
-				skb = tcp_friend_tail(friend, &copy);
-				if (copy < 0) {
-					sk->sk_err = -copy;
-					err = -EPIPE;
-					goto out_err;
-				}
-			} else {
-				skb = tcp_write_queue_tail(sk);
-				if (tcp_send_head(sk)) {
-					if (skb->ip_summed == CHECKSUM_NONE)
-						max = mss_now;
-					copy = max - skb->len;
-				}
+			if (tcp_send_head(sk)) {
+				if (skb->ip_summed == CHECKSUM_NONE)
+					max = mss_now;
+				copy = max - skb->len;
 			}
 
 			if (copy <= 0) {
 new_segment:
+				/* Allocate new segment. If the interface is SG,
+				 * allocate skb fitting to single page.
+				 */
 				if (!sk_stream_memory_free(sk))
 					goto wait_for_sndbuf;
 
-				if (friend)
-					skb = tcp_friend_alloc_skb(sk, max);
-				else {
-					/* Allocate new segment. If the
-					 * interface is SG, allocate skb
-					 * fitting to single page.
-					 */
-					skb = sk_stream_alloc_skb(sk,
-							select_size(sk),
-							sk->sk_allocation);
-				}
-
+				skb = sk_stream_alloc_skb(sk, select_size(sk),
+						sk->sk_allocation);
 				if (!skb)
 					goto wait_for_memory;
 
@@ -1237,7 +979,6 @@ new_segment:
 				copy = size_goal;
 				max = size_goal;
 			}
-			tcb = TCP_SKB_CB(skb);
 
 			/* Try to append data to the end of skb. */
 			if (copy > seglen)
@@ -1323,34 +1064,16 @@ new_segment:
 				TCP_OFF(sk) = off + copy;
 			}
 
+			if (!copied)
+				TCP_SKB_CB(skb)->flags &= ~TCPCB_FLAG_PSH;
+
 			tp->write_seq += copy;
+			TCP_SKB_CB(skb)->end_seq += copy;
+			skb_shinfo(skb)->gso_segs = 0;
 
 			from += copy;
 			copied += copy;
-			seglen -= copy;
-
-			if (friend) {
-				err = tcp_friend_send_lock(friend);
-				if (err) {
-					sk->sk_err = -err;
-					err = -EPIPE;
-					goto out_err;
-				}
-				tcb->end_seq += copy;
-				if (TCP_FRIEND_CB(tcb)->tail_inuse) {
-					TCP_FRIEND_CB(tcb)->tail_inuse = false;
-					tcp_friend_seq(sk, copy, 0);
-				} else {
-					if (tcp_friend_push(sk, skb))
-						goto wait_for_sndbuf;
-				}
-				continue;
-			}
-
-			tcb->end_seq += copy;
-			skb_shinfo(skb)->gso_segs = 0;
-
-			if (seglen == 0 && iovlen == 0)
+			if ((seglen -= copy) == 0 && iovlen == 0)
 				goto out;
 
 			if (skb->len < max || (flags & MSG_OOB))
@@ -1372,8 +1095,7 @@ wait_for_memory:
 			if ((err = sk_stream_wait_memory(sk, &timeo)) != 0)
 				goto do_error;
 
-			if (!friend)
-				mss_now = tcp_send_mss(sk, &size_goal, flags);
+			mss_now = tcp_send_mss(sk, &size_goal, flags);
 		}
 	}
 
@@ -1386,12 +1108,7 @@ out:
 	return copied;
 
 do_fault:
-	if (skb->friend) {
-		if (TCP_FRIEND_CB(tcb)->tail_inuse)
-			TCP_FRIEND_CB(tcb)->tail_inuse = false;
-		else
-			__kfree_skb(skb);
-	} else if (!skb->len) {
+	if (!skb->len) {
 		tcp_unlink_write_queue(skb, sk);
 		/* It is the one place in all of TCP, except connection
 		 * reset, where we can be unlinking the send_head.
@@ -1408,13 +1125,6 @@ out_err:
 	TCP_CHECK_TIMER(sk);
 	release_sock(sk);
 	return err;
-}
-
-static inline void tcp_friend_write_space(struct sock *sk)
-{
-	/* Queued data below 1/4th of sndbuf? */
-	if ((sk_sndbuf_get(sk) >> 2) > sk_wmem_queued_get(sk))
-		sk->sk_friend->sk_write_space(sk->sk_friend);
 }
 
 /*
@@ -1476,13 +1186,9 @@ void tcp_cleanup_rbuf(struct sock *sk, int copied)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	int time_to_ack = 0;
-	struct sk_buff *skb;
-
-	if (sk->sk_friend)
-		return;
 
 #if TCP_DEBUG
-	skb = skb_peek(&sk->sk_receive_queue);
+	struct sk_buff *skb = skb_peek(&sk->sk_receive_queue);
 
 	WARN(skb && !before(tp->copied_seq, TCP_SKB_CB(skb)->end_seq),
 	     KERN_INFO "cleanup rbuf bug: copied %X seq %X rcvnxt %X\n",
@@ -1554,27 +1260,17 @@ static void tcp_prequeue_process(struct sock *sk)
 	tp->ucopy.memory = 0;
 }
 
-static inline struct sk_buff *tcp_recv_skb(struct sock *sk, u32 seq, u32 *off,
-					   size_t *len)
+static inline struct sk_buff *tcp_recv_skb(struct sock *sk, u32 seq, u32 *off)
 {
 	struct sk_buff *skb;
 	u32 offset;
-	size_t avail;
 
 	skb_queue_walk(&sk->sk_receive_queue, skb) {
-		struct tcp_skb_cb *tcb = TCP_SKB_CB(skb);
-
-		offset = seq - tcb->seq;
-		if (skb->friend)
-			avail = (u32)(tcb->end_seq - seq);
-		else {
-			if (tcp_hdr(skb)->syn)
-				offset--;
-			avail = skb->len - offset;
-		}
-		if (avail > 0 || (!skb->friend && tcp_hdr(skb)->fin)) {
+		offset = seq - TCP_SKB_CB(skb)->seq;
+		if (tcp_hdr(skb)->syn)
+			offset--;
+		if (offset < skb->len || tcp_hdr(skb)->fin) {
 			*off = offset;
-			*len = avail;
 			return skb;
 		}
 	}
@@ -1600,24 +1296,15 @@ int tcp_read_sock(struct sock *sk, read_descriptor_t *desc,
 	u32 seq = tp->copied_seq;
 	u32 offset;
 	int copied = 0;
-	size_t len;
-	int err;
-	struct sock *friend = sk->sk_friend;
-	long timeo = sock_rcvtimeo(sk, false);
 
 	if (sk->sk_state == TCP_LISTEN)
 		return -ENOTCONN;
-
-	err = tcp_friend_validate(sk, &friend, &timeo);
-	if (err < 0)
-		return err;
-	if (friend)
-		tcp_friend_recv_lock(sk);
-
-	while ((skb = tcp_recv_skb(sk, seq, &offset, &len)) != NULL) {
-		if (len > 0) {
+	while ((skb = tcp_recv_skb(sk, seq, &offset)) != NULL) {
+		if (offset < skb->len) {
 			int used;
-again:
+			size_t len;
+
+			len = skb->len - offset;
 			/* Stop reading if we hit a patch of urgent data */
 			if (tp->urg_data) {
 				u32 urg_offset = tp->urg_seq - seq;
@@ -1626,9 +1313,6 @@ again:
 				if (!len)
 					break;
 			}
-			if (friend)
-				tcp_friend_unlock(sk);
-
 			used = recv_actor(desc, skb, offset, len);
 			if (used < 0) {
 				if (!copied)
@@ -1639,63 +1323,32 @@ again:
 				copied += used;
 				offset += used;
 			}
-
-			if (friend)
-				tcp_friend_recv_lock(sk);
-			if (skb->friend) {
-				len = (u32)(TCP_SKB_CB(skb)->end_seq - seq);
-				if (len > 0) {
-					/*
-					 * Friend did an skb_put() while we
-					 * were away so process the same skb.
-					 */
-					if (!desc->count)
-						break;
-					tp->copied_seq = seq;
-					goto again;
-				}
-			} else {
-				/*
-				 * If recv_actor drops the lock (e.g. TCP
-				 * splice receive) the skb pointer might be
-				 * invalid when getting here: tcp_collapse
-				 * might have deleted it while aggregating
-				 * skbs from the socket queue.
-				 */
-				skb = tcp_recv_skb(sk, seq-1, &offset, &len);
-				if (!skb || (offset+1 != skb->len))
-					break;
-			}
+			/*
+			 * If recv_actor drops the lock (e.g. TCP splice
+			 * receive) the skb pointer might be invalid when
+			 * getting here: tcp_collapse might have deleted it
+			 * while aggregating skbs from the socket queue.
+			 */
+			skb = tcp_recv_skb(sk, seq-1, &offset);
+			if (!skb || (offset+1 != skb->len))
+				break;
 		}
-		if (!skb->friend && tcp_hdr(skb)->fin) {
+		if (tcp_hdr(skb)->fin) {
 			sk_eat_skb(sk, skb, 0);
 			++seq;
 			break;
 		}
-		if (skb->friend) {
-			if (!TCP_FRIEND_CB(TCP_SKB_CB(skb))->tail_inuse) {
-				__skb_unlink(skb, &sk->sk_receive_queue);
-				__kfree_skb(skb);
-				tcp_friend_write_space(sk);
-			}
-			tcp_friend_unlock(sk);
-			tcp_friend_recv_lock(sk);
-		} else
-			sk_eat_skb(sk, skb, 0);
+		sk_eat_skb(sk, skb, 0);
 		if (!desc->count)
 			break;
 	}
 	tp->copied_seq = seq;
 
-	if (friend) {
-		tcp_friend_unlock(sk);
-		tcp_friend_write_space(sk);
-	} else {
-		tcp_rcv_space_adjust(sk);
-		/* Clean up data we have read: This will do ACK frames. */
-		if (copied > 0)
-			tcp_cleanup_rbuf(sk, copied);
-	}
+	tcp_rcv_space_adjust(sk);
+
+	/* Clean up data we have read: This will do ACK frames. */
+	if (copied > 0)
+		tcp_cleanup_rbuf(sk, copied);
 	return copied;
 }
 
@@ -1710,7 +1363,6 @@ again:
 int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		size_t len, int nonblock, int flags, int *addr_len)
 {
-	struct sock *friend = sk->sk_friend;
 	struct tcp_sock *tp = tcp_sk(sk);
 	int copied = 0;
 	u32 peek_seq;
@@ -1723,7 +1375,6 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	int copied_early = 0;
 	struct sk_buff *skb;
 	u32 urg_hole = 0;
-	bool locked = false;
 
 	lock_sock(sk);
 
@@ -1734,10 +1385,6 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		goto out;
 
 	timeo = sock_rcvtimeo(sk, nonblock);
-
-	err = tcp_friend_validate(sk, &friend, &timeo);
-	if (err < 0)
-		goto out;
 
 	/* Urgent data needs to be handled specially. */
 	if (flags & MSG_OOB)
@@ -1762,7 +1409,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			available = TCP_SKB_CB(skb)->seq + skb->len - (*seq);
 		if ((available < target) &&
 		    (len > sysctl_tcp_dma_copybreak) && !(flags & MSG_PEEK) &&
-		    !sysctl_tcp_low_latency && !friend &&
+		    !sysctl_tcp_low_latency &&
 		    dma_find_channel(DMA_MEMCPY)) {
 			preempt_enable_no_resched();
 			tp->ucopy.pinned_list =
@@ -1773,10 +1420,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	}
 #endif
 
-	err = 0;
-
 	do {
-		struct tcp_skb_cb *tcb;
 		u32 offset;
 
 		/* Are we at urgent data? Stop if we have read anything or have SIGURG pending. */
@@ -1789,74 +1433,33 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			}
 		}
 
-		/*
-		 * Next get a buffer. Note, for friends sendmsg() queues
-		 * data directly to our sk_receive_queue by holding our
-		 * slock and either tail queuing a new skb or adding new
-		 * data to the tail skb. In the later case tail_inuse is
-		 * set, slock dropped, copyin, skb->len updated, re-hold
-		 * slock, end_seq updated, so we can only use the bytes
-		 * from *seq to end_seq!
-		 */
-		if (friend && !locked) {
-			tcp_friend_recv_lock(sk);
-			locked = true;
-		}
+		/* Next get a buffer. */
 
 		skb_queue_walk(&sk->sk_receive_queue, skb) {
-			tcb = TCP_SKB_CB(skb);
-			offset = *seq - tcb->seq;
-			if (friend) {
-				if (skb->friend) {
-					used = (u32)(tcb->end_seq - *seq);
-					if (used > 0) {
-						tcp_friend_unlock(sk);
-						locked = false;
-						/* Can use it all */
-						goto found_ok_skb;
-					}
-					/* No data to copyout */
-					if (flags & MSG_PEEK)
-						continue;
-					if (!TCP_FRIEND_CB(tcb)->tail_inuse)
-						goto unlink;
-					break;
-				}
-				tcp_friend_unlock(sk);
-				locked = false;
-			}
-
 			/* Now that we have two receive queues this
 			 * shouldn't happen.
 			 */
-			if (WARN(before(*seq, tcb->seq),
+			if (WARN(before(*seq, TCP_SKB_CB(skb)->seq),
 			     KERN_INFO "recvmsg bug: copied %X "
-				       "seq %X rcvnxt %X fl %X\n",
-				       *seq, tcb->seq, tp->rcv_nxt,
+				       "seq %X rcvnxt %X fl %X\n", *seq,
+				       TCP_SKB_CB(skb)->seq, tp->rcv_nxt,
 				       flags))
 				break;
 
+			offset = *seq - TCP_SKB_CB(skb)->seq;
 			if (tcp_hdr(skb)->syn)
 				offset--;
-			if (offset < skb->len) {
-				/* Ok so how much can we use? */
-				used = skb->len - offset;
+			if (offset < skb->len)
 				goto found_ok_skb;
-			}
 			if (tcp_hdr(skb)->fin)
 				goto found_fin_ok;
 			WARN(!(flags & MSG_PEEK), KERN_INFO "recvmsg bug 2: "
 					"copied %X seq %X rcvnxt %X fl %X\n",
-					*seq, tcb->seq,
+					*seq, TCP_SKB_CB(skb)->seq,
 					tp->rcv_nxt, flags);
 		}
 
 		/* Well, if we have backlog, try to process it now yet. */
-
-		if (friend && locked) {
-			tcp_friend_unlock(sk);
-			locked = false;
-		}
 
 		if (copied >= target && !sk->sk_backlog.tail)
 			break;
@@ -1904,8 +1507,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 		tcp_cleanup_rbuf(sk, copied);
 
-		if (!sysctl_tcp_low_latency && !friend &&
-		    tp->ucopy.task == user_recv) {
+		if (!sysctl_tcp_low_latency && tp->ucopy.task == user_recv) {
 			/* Install new reader */
 			if (!user_recv && !(flags & (MSG_TRUNC | MSG_PEEK))) {
 				user_recv = current;
@@ -1994,6 +1596,8 @@ do_prequeue:
 		continue;
 
 	found_ok_skb:
+		/* Ok so how much can we use? */
+		used = skb->len - offset;
 		if (len < used)
 			used = len;
 
@@ -2046,7 +1650,7 @@ do_prequeue:
 				if (err) {
 					/* Exception. Bailout! */
 					if (!copied)
-						copied = err;
+						copied = -EFAULT;
 					break;
 				}
 			}
@@ -2055,7 +1659,6 @@ do_prequeue:
 		*seq += used;
 		copied += used;
 		len -= used;
-		offset += used;
 
 		tcp_rcv_space_adjust(sk);
 
@@ -2064,45 +1667,11 @@ skip_copy:
 			tp->urg_data = 0;
 			tcp_fast_path_check(sk);
 		}
-
-		if (skb->friend) {
-			tcp_friend_recv_lock(sk);
-			locked = true;
-			used = (u32)(tcb->end_seq - *seq);
-			if (used) {
-				/*
-				 * Friend did an skb_put() while we were away
-				 * so if more to do process the same skb.
-				 */
-				if (len > 0) {
-					tcp_friend_unlock(sk);
-					locked = false;
-					goto found_ok_skb;
-				}
-				continue;
-			}
-			if (TCP_FRIEND_CB(tcb)->tail_inuse) {
-				/* Give sendmsg a chance */
-				tcp_friend_unlock(sk);
-				locked = false;
-				continue;
-			}
-			if (!(flags & MSG_PEEK)) {
-unlink:
-				__skb_unlink(skb, &sk->sk_receive_queue);
-				__kfree_skb(skb);
-				tcp_friend_unlock(sk);
-				locked = false;
-				tcp_friend_write_space(sk);
-			}
+		if (used + offset < skb->len)
 			continue;
-		}
 
-		if (offset < skb->len)
-			continue;
-		else if (tcp_hdr(skb)->fin)
+		if (tcp_hdr(skb)->fin)
 			goto found_fin_ok;
-
 		if (!(flags & MSG_PEEK)) {
 			sk_eat_skb(sk, skb, copied_early);
 			copied_early = 0;
@@ -2118,9 +1687,6 @@ unlink:
 		}
 		break;
 	} while (len > 0);
-
-	if (friend && locked)
-		tcp_friend_unlock(sk);
 
 	if (user_recv) {
 		if (!skb_queue_empty(&tp->ucopy.prequeue)) {
@@ -2301,9 +1867,6 @@ void tcp_close(struct sock *sk, long timeout)
 
 		goto adjudge_to_death;
 	}
-
-	if (sk->sk_friend)
-		sock_put(sk->sk_friend);
 
 	/*  We need to flush the recv. buffs.  We do this only on the
 	 *  descriptor close, not protocol-sourced closes, because the
@@ -3346,7 +2909,8 @@ void __init tcp_init(void)
 {
 	struct sk_buff *skb = NULL;
 	unsigned long nr_pages, limit;
-	int order, i, max_share;
+	int max_share, cnt;
+	unsigned int i;
 
 	BUILD_BUG_ON(sizeof(struct tcp_skb_cb) > sizeof(skb->cb));
 
@@ -3372,7 +2936,7 @@ void __init tcp_init(void)
 					&tcp_hashinfo.ehash_size,
 					NULL,
 					thash_entries ? 0 : 512 * 1024);
-	tcp_hashinfo.ehash_size = 1 << tcp_hashinfo.ehash_size;
+	tcp_hashinfo.ehash_size = 1U << tcp_hashinfo.ehash_size;
 	for (i = 0; i < tcp_hashinfo.ehash_size; i++) {
 		INIT_HLIST_NULLS_HEAD(&tcp_hashinfo.ehash[i].chain, i);
 		INIT_HLIST_NULLS_HEAD(&tcp_hashinfo.ehash[i].twchain, i);
@@ -3389,37 +2953,29 @@ void __init tcp_init(void)
 					&tcp_hashinfo.bhash_size,
 					NULL,
 					64 * 1024);
-	tcp_hashinfo.bhash_size = 1 << tcp_hashinfo.bhash_size;
+	tcp_hashinfo.bhash_size = 1U << tcp_hashinfo.bhash_size;
 	for (i = 0; i < tcp_hashinfo.bhash_size; i++) {
 		spin_lock_init(&tcp_hashinfo.bhash[i].lock);
 		INIT_HLIST_HEAD(&tcp_hashinfo.bhash[i].chain);
 	}
 
-	/* Try to be a bit smarter and adjust defaults depending
-	 * on available memory.
-	 */
-	for (order = 0; ((1 << order) << PAGE_SHIFT) <
-			(tcp_hashinfo.bhash_size * sizeof(struct inet_bind_hashbucket));
-			order++)
-		;
-	if (order >= 4) {
-		tcp_death_row.sysctl_max_tw_buckets = 180000;
-		sysctl_tcp_max_orphans = 4096 << (order - 4);
-		sysctl_max_syn_backlog = 1024;
-	} else if (order < 3) {
-		tcp_death_row.sysctl_max_tw_buckets >>= (3 - order);
-		sysctl_tcp_max_orphans >>= (3 - order);
-		sysctl_max_syn_backlog = 128;
-	}
+
+	cnt = tcp_hashinfo.ehash_size;
+
+	tcp_death_row.sysctl_max_tw_buckets = cnt / 2;
+	sysctl_tcp_max_orphans = cnt / 2;
+	sysctl_max_syn_backlog = max(128, cnt / 256);
 
 	/* Set the pressure threshold to be a fraction of global memory that
 	 * is up to 1/2 at 256 MB, decreasing toward zero with the amount of
-	 * memory, with a floor of 128 pages.
+	 * memory, with a floor of 128 pages, and a ceiling that prevents an
+	 * integer overflow.
 	 */
 	nr_pages = totalram_pages - totalhigh_pages;
 	limit = min(nr_pages, 1UL<<(28-PAGE_SHIFT)) >> (20-PAGE_SHIFT);
 	limit = (limit * (nr_pages >> (20-PAGE_SHIFT))) >> (PAGE_SHIFT-11);
 	limit = max(limit, 128UL);
+	limit = min(limit, INT_MAX * 4UL / 3 / 2);
 	sysctl_tcp_mem[0] = limit / 4 * 3;
 	sysctl_tcp_mem[1] = limit;
 	sysctl_tcp_mem[2] = sysctl_tcp_mem[0] * 2;

@@ -14,6 +14,7 @@
 #include <linux/ioprio.h>
 #include <linux/blktrace_api.h>
 #include "cfq.h"
+#include "blk.h"
 
 /*
  * tunables
@@ -992,7 +993,8 @@ static inline struct cfq_group *cfqg_of_blkg(struct blkio_group *blkg)
 	return NULL;
 }
 
-void cfq_update_blkio_group_weight(void *key, struct blkio_group *blkg,
+void cfq_update_blkio_group_weight(struct request_queue *q,
+					struct blkio_group *blkg,
 					unsigned int weight)
 {
 	struct cfq_group *cfqg = cfqg_of_blkg(blkg);
@@ -1015,10 +1017,10 @@ static void cfq_init_add_cfqg_lists(struct cfq_data *cfqd,
 	if (bdi->dev) {
 		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
 		cfq_blkiocg_add_blkio_group(blkcg, &cfqg->blkg,
-					(void *)cfqd, MKDEV(major, minor));
+					cfqd->queue, MKDEV(major, minor));
 	} else
 		cfq_blkiocg_add_blkio_group(blkcg, &cfqg->blkg,
-					(void *)cfqd, 0);
+					cfqd->queue, 0);
 
 	cfqd->nr_blkcg_linked_grps++;
 	cfqg->weight = blkcg_get_weight(blkcg, cfqg->blkg.dev);
@@ -1067,7 +1069,6 @@ static struct cfq_group *
 cfq_find_cfqg(struct cfq_data *cfqd, struct blkio_cgroup *blkcg)
 {
 	struct cfq_group *cfqg = NULL;
-	void *key = cfqd;
 	struct backing_dev_info *bdi = &cfqd->queue->backing_dev_info;
 	unsigned int major, minor;
 
@@ -1078,7 +1079,8 @@ cfq_find_cfqg(struct cfq_data *cfqd, struct blkio_cgroup *blkcg)
 	if (blkcg == &blkio_root_cgroup)
 		cfqg = &cfqd->root_group;
 	else
-		cfqg = cfqg_of_blkg(blkiocg_lookup_group(blkcg, key));
+		cfqg = cfqg_of_blkg(blkiocg_lookup_group(blkcg, cfqd->queue,
+							 BLKIO_POLICY_PROP));
 
 	if (cfqg && !cfqg->blkg.dev && bdi->dev && dev_name(bdi->dev)) {
 		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
@@ -1140,6 +1142,16 @@ static struct cfq_group *cfq_get_cfqg(struct cfq_data *cfqd)
 
 	if (!cfqg)
 		cfqg = &cfqd->root_group;
+	else if (blkcg != &blkio_root_cgroup) {
+		if (blk_init_rl(&cfqg->blkg.rl, q, GFP_ATOMIC)) {
+			kfree(cfqg);
+			rcu_read_unlock();
+			return NULL;
+		}
+		cfqg->blkg.rl.blkg = &cfqg->blkg;
+		INIT_LIST_HEAD(&cfqg->blkg.q_node);
+		list_add(&cfqg->blkg.q_node, &q->blkg_list);
+	}
 
 	cfq_init_add_cfqg_lists(cfqd, cfqg, blkcg);
 	rcu_read_unlock();
@@ -1175,6 +1187,8 @@ static void cfq_put_cfqg(struct cfq_group *cfqg)
 	for_each_cfqg_st(cfqg, i, j, st)
 		BUG_ON(!RB_EMPTY_ROOT(&st->rb) || st->active != NULL);
 	free_percpu(cfqg->blkg.stats_cpu);
+	blk_exit_rl(&cfqg->blkg.rl);
+	list_del(&cfqg->blkg.q_node);
 	kfree(cfqg);
 }
 
@@ -1218,21 +1232,21 @@ static void cfq_release_cfq_groups(struct cfq_data *cfqd)
  * any pending IO in the group is finished.
  *
  * This function is called under rcu_read_lock(). key is the rcu protected
- * pointer. That means "key" is a valid cfq_data pointer as long as we are rcu
+ * pointer. That means @q is a valid cfq_data pointer as long as we are rcu
  * read lock.
  *
- * "key" was fetched from blkio_group under blkio_cgroup->lock. That means
+ * @q was fetched from blkio_group under blkio_cgroup->lock. That means
  * it should not be NULL as even if elevator was exiting, cgroup deltion
  * path got to it first.
  */
-void cfq_unlink_blkio_group(void *key, struct blkio_group *blkg)
+void cfq_unlink_blkio_group(struct request_queue *q, struct blkio_group *blkg)
 {
-	unsigned long  flags;
-	struct cfq_data *cfqd = key;
+	struct cfq_data *cfqd = q->elevator->elevator_data;
+	unsigned long flags;
 
-	spin_lock_irqsave(cfqd->queue->queue_lock, flags);
+	spin_lock_irqsave(q->queue_lock, flags);
 	cfq_destroy_cfqg(cfqd, cfqg_of_blkg(blkg));
-	spin_unlock_irqrestore(cfqd->queue->queue_lock, flags);
+	spin_unlock_irqrestore(q->queue_lock, flags);
 }
 
 #else /* GROUP_IOSCHED */
@@ -4047,7 +4061,7 @@ static void *cfq_init_queue(struct request_queue *q)
 	rcu_read_lock();
 
 	cfq_blkiocg_add_blkio_group(&blkio_root_cgroup, &cfqg->blkg,
-					(void *)cfqd, 0);
+				    cfqd->queue, 0);
 	rcu_read_unlock();
 	cfqd->nr_blkcg_linked_grps++;
 

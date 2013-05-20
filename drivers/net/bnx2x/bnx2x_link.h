@@ -1,4 +1,4 @@
-/* Copyright 2008-2011 Broadcom Corporation
+/* Copyright 2008-2012 Broadcom Corporation
  *
  * Unless you and Broadcom execute a separate written software license
  * agreement governing use of this software, this software is licensed to you
@@ -254,6 +254,7 @@ struct link_params {
 #define FEATURE_CONFIG_BC_SUPPORTS_DUAL_PHY_OPT_MDL_VRFY	(1<<3)
 #define FEATURE_CONFIG_AUTOGREEEN_ENABLED			(1<<9)
 #define FEATURE_CONFIG_BC_SUPPORTS_SFP_TX_DISABLED		(1<<10)
+#define FEATURE_CONFIG_DISABLE_REMOTE_FAULT_DET		(1<<11)
 	/* Will be populated during common init */
 	struct bnx2x_phy phy[MAX_PHYS];
 
@@ -479,7 +480,7 @@ int bnx2x_ets_strict(const struct link_params *params, const u8 strict_cos);
 /*  Configure the COS to ETS according to BW and SP settings.*/
 int bnx2x_ets_e3b0_config(const struct link_params *params,
 			 const struct link_vars *vars,
-			 const struct bnx2x_ets_params *ets_params);
+			 struct bnx2x_ets_params *ets_params);
 /* Read pfc statistic*/
 void bnx2x_pfc_statistic(struct link_params *params, struct link_vars *vars,
 						 u32 pfc_frames_sent[2],
@@ -493,4 +494,6 @@ int bnx2x_sfp_module_detection(struct bnx2x_phy *phy,
 
 void bnx2x_period_func(struct link_params *params, struct link_vars *vars);
 
+int bnx2x_check_half_open_conn(struct link_params *params,
+			       struct link_vars *vars, u8 notify);
 #endif /* BNX2X_LINK_H */

@@ -268,8 +268,8 @@ void bsg_remove_queue(struct request_queue *q)
 		 */
 		req = blk_fetch_request(q);
 		/* save requests in use and starved */
-		counts = q->rq.count[0] + q->rq.count[1] +
-			 q->rq.starved[0] + q->rq.starved[1];
+		counts = q->root_rl.count[0] + q->root_rl.count[1] +
+			 q->root_rl.starved[0] + q->root_rl.starved[1];
 		spin_unlock_irq(q->queue_lock);
 		/* any requests still outstanding? */
 		if (counts == 0)

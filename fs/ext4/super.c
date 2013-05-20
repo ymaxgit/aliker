@@ -1020,6 +1020,9 @@ static int ext4_show_options(struct seq_file *seq, struct vfsmount *vfs)
 	if (test_opt(sb, NOLOAD))
 		seq_puts(seq, ",norecovery");
 
+	if (test_opt(sb, DIOREAD_NOLOCK))
+		seq_puts(seq, ",dioread_nolock");
+
 	if (test_opt(sb, BLOCK_VALIDITY) &&
 	    !(def_mount_opts & EXT4_DEFM_BLOCK_VALIDITY))
 		seq_puts(seq, ",block_validity");
@@ -1213,6 +1216,7 @@ enum {
 	Opt_stripe, Opt_delalloc, Opt_nodelalloc,
 	Opt_block_validity, Opt_noblock_validity,
 	Opt_inode_readahead_blks, Opt_journal_ioprio,
+	Opt_dioread_nolock, Opt_dioread_lock,
 	Opt_discard, Opt_nodiscard,
 	Opt_init_inode_table, Opt_noinit_inode_table,
 };
@@ -1281,6 +1285,8 @@ static const match_table_t tokens = {
 	{Opt_auto_da_alloc, "auto_da_alloc=%u"},
 	{Opt_auto_da_alloc, "auto_da_alloc"},
 	{Opt_noauto_da_alloc, "noauto_da_alloc"},
+	{Opt_dioread_nolock, "dioread_nolock"},
+	{Opt_dioread_lock, "dioread_lock"},
 	{Opt_discard, "discard"},
 	{Opt_nodiscard, "nodiscard"},
 	{Opt_init_inode_table, "init_itable=%u"},
@@ -1723,6 +1729,12 @@ set_qf_format:
 			break;
 		case Opt_nodiscard:
 			clear_opt(sbi->s_mount_opt, DISCARD);
+			break;
+		case Opt_dioread_nolock:
+			set_opt(sbi->s_mount_opt, DIOREAD_NOLOCK);
+			break;
+		case Opt_dioread_lock:
+			clear_opt(sbi->s_mount_opt, DIOREAD_NOLOCK);
 			break;
 		case Opt_init_inode_table:
 			set_opt(sbi->s_mount_opt, INIT_INODE_TABLE);
@@ -3134,19 +3146,9 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	/*
 	 * enable delayed allocation by default
 	 * Use -o nodelalloc to turn it off
-	 *
-	 * Note from Zheng Liu
-	 * We disable delayed allocation by default because in product system we
-	 * meet a lot of regressions.  Delayed allocation makes a huge latency
-	 * while the dirty data is written out, although it brings us a better
-	 * thoughput.  If we can confirm it is useful for an application, we can
-	 * use an mount option to enable it:
-	 *   mount -t ext4 -o remount,delalloc ${dev} ${mnt}
 	 */
-#if 0
 	if ((def_mount_opts & EXT4_DEFM_NODELALLOC) == 0)
 		set_opt(sbi->s_mount_opt, DELALLOC);
-#endif
 
 	/*
 	 * set default s_li_wait_mult for lazyinit, for the case there is
@@ -3499,7 +3501,7 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	      EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_RECOVER)) {
 		ext4_msg(sb, KERN_ERR, "required journal recovery "
 		       "suppressed and not mounted read-only");
-		goto failed_mount4;
+		goto failed_mount_wq;
 	} else {
 		clear_opt(sbi->s_mount_opt, DATA_FLAGS);
 		sbi->s_journal = NULL;
@@ -3511,7 +3513,7 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	    !jbd2_journal_set_features(EXT4_SB(sb)->s_journal, 0, 0,
 				       JBD2_FEATURE_INCOMPAT_64BIT)) {
 		ext4_msg(sb, KERN_ERR, "Failed to set 64-bit journal feature");
-		goto failed_mount4;
+		goto failed_mount_wq;
 	}
 
 	if (test_opt(sb, JOURNAL_ASYNC_COMMIT)) {
@@ -3550,7 +3552,7 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 		    (sbi->s_journal, 0, 0, JBD2_FEATURE_INCOMPAT_REVOKE)) {
 			ext4_msg(sb, KERN_ERR, "Journal does not support "
 			       "requested data journaling mode");
-			goto failed_mount4;
+			goto failed_mount_wq;
 		}
 	default:
 		break;
@@ -3578,6 +3580,11 @@ no_journal:
 			ext4_msg(sb, KERN_WARNING, "Ignoring nobh option - "
 				"its supported only with writeback mode");
 			clear_opt(sbi->s_mount_opt, NOBH);
+		}
+		if (test_opt(sb, DIOREAD_NOLOCK)) {
+			ext4_msg(sb, KERN_WARNING, "dioread_nolock option is "
+				"not supoorted with nobh mode");
+			goto failed_mount_wq;
 		}
 	}
 	EXT4_SB(sb)->dio_unwritten_wq = create_workqueue("ext4-dio-unwritten");
@@ -3642,6 +3649,18 @@ no_journal:
 		ext4_msg(sb, KERN_WARNING, "Ignoring delalloc option - "
 			 "requested data journaling mode");
 		clear_opt(sbi->s_mount_opt, DELALLOC);
+	}
+	if (test_opt(sb, DIOREAD_NOLOCK)) {
+		if (test_opt(sb, DATA_FLAGS) == EXT4_MOUNT_JOURNAL_DATA) {
+			ext4_msg(sb, KERN_WARNING, "Ignoring dioread_nolock "
+				"option - requested data journaling mode");
+			clear_opt(sbi->s_mount_opt, DIOREAD_NOLOCK);
+		}
+		if (sb->s_blocksize < PAGE_SIZE) {
+			ext4_msg(sb, KERN_WARNING, "Ignoring dioread_nolock "
+				"option - block size is too small");
+			clear_opt(sbi->s_mount_opt, DIOREAD_NOLOCK);
+		}
 	}
 
 	err = ext4_setup_system_zone(sb);

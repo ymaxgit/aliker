@@ -231,13 +231,14 @@ u64 get_cpu_idle_time_us(int cpu, u64 *last_update_time)
 	}
 
 	return ktime_to_us(idle);
+
 }
 EXPORT_SYMBOL_GPL(get_cpu_idle_time_us);
 
 /**
  * get_cpu_iowait_time_us - get the total iowait time of a cpu
  * @cpu: CPU number to query
- * @last_update_time: variable to store update time in. Do not update
+ * @last_update_time: variable to store update time in.  Do not update
  * counters if NULL.
  *
  * Return the cummulative iowait time (since boot) for a given
@@ -429,7 +430,6 @@ void tick_nohz_stop_sched_tick(int inidle)
 		 */
 		if (!ts->tick_stopped) {
 			select_nohz_load_balancer(1);
-			calc_load_enter_idle();
 
 			ts->idle_tick = hrtimer_get_expires(&ts->sched_timer);
 			ts->tick_stopped = 1;
@@ -565,7 +565,6 @@ void tick_nohz_restart_sched_tick(void)
 		account_idle_ticks(ticks);
 #endif
 
-	calc_load_exit_idle();
 	touch_softlockup_watchdog();
 	/*
 	 * Cancel the scheduled timer and restore the tick

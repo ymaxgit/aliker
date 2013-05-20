@@ -41,7 +41,6 @@
 #include <trace/events/ext3.h>
 #include "xattr.h"
 #include "acl.h"
-#include "subtree.h"
 
 static int ext3_writepage_trans_blocks(struct inode *inode);
 
@@ -2966,10 +2965,6 @@ struct inode *ext3_iget(struct super_block *sb, unsigned long ino)
 		}
 	} else
 		ei->i_extra_isize = 0;
-
-	ret = ext3_subtree_read(inode);
-	if (ret)
-		goto bad_inode;
 
 	if (S_ISREG(inode->i_mode)) {
 		inode->i_op = &ext3_file_inode_operations;

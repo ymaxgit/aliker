@@ -1,3 +1,24 @@
+/*
+ * Ring buffer of kernel GDB tracepoint module.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ *
+ * Copyright(C) KGTP team (https://code.google.com/p/kgtp/), 2011, 2012
+ *
+ */
+
 #define ADDR_SIZE		sizeof(size_t)
 #define GTP_RB_HEAD(addr)	((void *)((size_t)(addr) & PAGE_MASK))
 #define GTP_RB_DATA(addr)	(GTP_RB_HEAD(addr) + ADDR_SIZE)
@@ -18,7 +39,11 @@ struct gtp_rb_s {
 };
 
 static struct gtp_rb_s __percpu	*gtp_rb;
-static atomic64_t		gtp_rb_count;
+#if defined(CONFIG_ARM) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34))
+static atomic_t				gtp_rb_count;
+#else
+static atomic64_t			gtp_rb_count;
+#endif
 static unsigned int		gtp_rb_page_count;
 static atomic_t			gtp_rb_discard_page_number;
 
@@ -67,14 +92,22 @@ gtp_rb_reset(void)
 		rb->rp_id = 0;
 	}
 
+#if defined(CONFIG_ARM) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34))
+	atomic_set(&gtp_rb_count, 0);
+#else
 	atomic64_set(&gtp_rb_count, 0);
+#endif
 	atomic_set(&gtp_rb_discard_page_number, 0);
 }
 
 static inline u64
 gtp_rb_clock(void)
 {
+#if defined(CONFIG_ARM) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34))
+	return (u64)atomic_inc_return(&gtp_rb_count);
+#else
 	return atomic64_inc_return(&gtp_rb_count);
+#endif
 }
 
 #define GTP_RB_PAGE_IS_EMPTY	(gtp_rb_page_count == 0)
@@ -151,10 +184,10 @@ gtp_rb_page_free(void)
 	gtp_rb_page_count = 0;
 }
 
-#define GTP_RB_LOCK(r)			spin_lock(&r->lock);
-#define GTP_RB_UNLOCK(r)		spin_unlock(&r->lock);
-#define GTP_RB_LOCK_IRQ(r, flags)	spin_lock_irqsave(&r->lock, flags);
-#define GTP_RB_UNLOCK_IRQ(r, flags)	spin_unlock_irqrestore(&r->lock, flags);
+#define GTP_RB_LOCK(r)			spin_lock(&r->lock)
+#define GTP_RB_UNLOCK(r)		spin_unlock(&r->lock)
+#define GTP_RB_LOCK_IRQ(r, flags)	spin_lock_irqsave(&r->lock, flags)
+#define GTP_RB_UNLOCK_IRQ(r, flags)	spin_unlock_irqrestore(&r->lock, flags)
 #define GTP_RB_RELEASE(r)		(r->prev_w = r->w)
 
 static void *
@@ -166,7 +199,10 @@ gtp_rb_alloc(struct gtp_rb_s *rb, size_t size, u64 id)
 
 	if (size > GTP_RB_DATA_MAX) {
 		printk(KERN_WARNING "gtp_rb_alloc: The size %zu is too big"
-				    "for the KGTP ring buffer.\n", size);
+				    "for the KGTP ring buffer.  "
+				    "The max size that KGTP ring buffer "
+				    "support is %lu (Need sub some size for "
+				    "inside structure).\n", size, GTP_RB_DATA_MAX);
 		return NULL;
 	}
 
@@ -190,7 +226,7 @@ gtp_rb_alloc(struct gtp_rb_s *rb, size_t size, u64 id)
 		if (id) {
 			/* Need insert a FID_PAGE_BEGIN.  */
 			FID(rb->w) = FID_PAGE_BEGIN;
-			*((u64 *)rb->w + FID_SIZE) = id;
+			*((u64 *)(rb->w + FID_SIZE)) = id;
 			rb->w += FRAME_ALIGN(GTP_FRAME_PAGE_BEGIN_SIZE);
 		}
 	}

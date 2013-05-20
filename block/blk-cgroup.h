@@ -15,6 +15,7 @@
 
 #include <linux/cgroup.h>
 #include <linux/u64_stats_sync.h>
+#include <linux/blkdev.h>
 
 enum blkio_policy_id {
 	BLKIO_POLICY_PROP = 0,		/* Proportional Bandwidth division */
@@ -150,9 +151,12 @@ struct blkio_group_stats_cpu {
 };
 
 struct blkio_group {
-	/* An rcu protected unique identifier for the group */
-	void *key;
+	/* Pointer to the associated request_queue, RCU protected */
+	struct request_queue *q;
+	struct list_head q_node;
 	struct hlist_node blkcg_node;
+	/* request allocation list for this blkcg-q pair */
+	struct request_list		rl;
 	unsigned short blkcg_id;
 	/* Store cgroup path */
 	char path[128];
@@ -199,17 +203,18 @@ extern unsigned int blkcg_get_read_iops(struct blkio_cgroup *blkcg,
 extern unsigned int blkcg_get_write_iops(struct blkio_cgroup *blkcg,
 				     dev_t dev);
 
-typedef void (blkio_unlink_group_fn) (void *key, struct blkio_group *blkg);
+typedef void (blkio_unlink_group_fn) (struct request_queue *q,
+			struct blkio_group *blkg);
 
-typedef void (blkio_update_group_weight_fn) (void *key,
+typedef void (blkio_update_group_weight_fn) (struct request_queue *q,
 			struct blkio_group *blkg, unsigned int weight);
-typedef void (blkio_update_group_read_bps_fn) (void * key,
+typedef void (blkio_update_group_read_bps_fn) (struct request_queue *q,
 			struct blkio_group *blkg, u64 read_bps);
-typedef void (blkio_update_group_write_bps_fn) (void *key,
+typedef void (blkio_update_group_write_bps_fn) (struct request_queue *q,
 			struct blkio_group *blkg, u64 write_bps);
-typedef void (blkio_update_group_read_iops_fn) (void *key,
+typedef void (blkio_update_group_read_iops_fn) (struct request_queue *q,
 			struct blkio_group *blkg, unsigned int read_iops);
-typedef void (blkio_update_group_write_iops_fn) (void *key,
+typedef void (blkio_update_group_write_iops_fn) (struct request_queue *q,
 			struct blkio_group *blkg, unsigned int write_iops);
 
 struct blkio_policy_ops {
@@ -248,6 +253,14 @@ static inline void blkio_policy_register(struct blkio_policy_type *blkiop) { }
 static inline void blkio_policy_unregister(struct blkio_policy_type *blkiop) { }
 
 static inline char *blkg_path(struct blkio_group *blkg) { return NULL; }
+static inline struct request_list *blk_get_rl(struct request_queue *q,
+					      struct bio *bio) { return &q->root_rl; }
+static inline void blk_put_rl(struct request_list *rl) { }
+static inline void blk_rq_set_rl(struct request *rq, struct request_list *rl) { }
+static inline struct request_list *blk_rq_rl(struct request *rq) { return &rq->q->root_rl; }
+
+#define blk_queue_for_each_rl(rl, q)	\
+	for ((rl) = &(q)->root_rl; (rl); (rl) = NULL)
 
 #endif
 
@@ -299,12 +312,13 @@ extern struct blkio_cgroup blkio_root_cgroup;
 extern struct blkio_cgroup *cgroup_to_blkio_cgroup(struct cgroup *cgroup);
 extern struct blkio_cgroup *task_blkio_cgroup(struct task_struct *tsk);
 extern void blkiocg_add_blkio_group(struct blkio_cgroup *blkcg,
-	struct blkio_group *blkg, void *key, dev_t dev,
+	struct blkio_group *blkg, struct request_queue *q, dev_t dev,
 	enum blkio_policy_id plid);
 extern int blkio_alloc_blkg_stats(struct blkio_group *blkg);
 extern int blkiocg_del_blkio_group(struct blkio_group *blkg);
 extern struct blkio_group *blkiocg_lookup_group(struct blkio_cgroup *blkcg,
-						void *key);
+						struct request_queue *q,
+						enum blkio_policy_id plid);
 void blkiocg_update_timeslice_used(struct blkio_group *blkg,
 					unsigned long time);
 void blkiocg_update_dispatch_stats(struct blkio_group *blkg, uint64_t bytes,
@@ -321,6 +335,80 @@ void blkiocg_update_io_throttled_stats(struct blkio_group *blkg,
 		struct blkio_group *curr_blkg, bool direction, bool sync);
 void blkiocg_update_io_throttled_remove_stats(struct blkio_group *blkg,
 					      bool direction, bool sync);
+
+/**
+ * blk_get_rl - get request_list to use
+ * @q: request_queue of interest
+ * @bio: bio which will be attached to the allocated request (may be %NULL)
+ *
+ * The caller wants to allocate a request from @q to use for @bio.  Find
+ * the request_list to use and obtain a reference on it.  Should be called
+ * under queue_lock.  This function is guaranteed to return non-%NULL
+ * request_list.
+ */
+static inline struct request_list *blk_get_rl(struct request_queue *q,
+					      struct bio *bio)
+{
+	struct blkio_cgroup *blkcg;
+	struct blkio_group *blkg;
+
+	rcu_read_lock();
+
+	blkcg = task_blkio_cgroup(current);
+
+	/* bypass blkg lookup and use @q->root_rl directly for root */
+	if (blkcg == &blkio_root_cgroup)
+		goto root_rl;
+
+	/*
+	 * Try to use blkg->rl.  blkg lookup may fail under memory pressure
+	 * or if either the blkcg or queue is going away.  Fall back to
+	 * root_rl in such cases.
+	 */
+	blkg = blkiocg_lookup_group(blkcg, q, BLKIO_POLICY_PROP);
+	if (!blkg)
+		goto root_rl;
+
+	rcu_read_unlock();
+	return &blkg->rl;
+root_rl:
+	rcu_read_unlock();
+	return &q->root_rl;
+}
+
+/**
+ * blk_rq_set_rl - associate a request with a request_list
+ * @rq: request of interest
+ * @rl: target request_list
+ *
+ * Associate @rq with @rl so that accounting and freeing can know the
+ * request_list @rq came from.
+ */
+static inline void blk_rq_set_rl(struct request *rq, struct request_list *rl)
+{
+	rq->rl = rl;
+}
+
+/**
+ * blk_rq_rl - return the request_list a request came from
+ * @rq: request of interest
+ *
+ * Return the request_list @rq is allocated from.
+ */
+static inline struct request_list *blk_rq_rl(struct request *rq)
+{
+	return rq->rl;
+}
+
+struct request_list *__blk_queue_next_rl(struct request_list *rl,
+					 struct request_queue *q);
+/**
+ * blk_queue_for_each_rl - iterate through all request_lists of a request_queue
+ *
+ * Should be used under queue_lock.
+ */
+#define blk_queue_for_each_rl(rl, q)	\
+	for ((rl) = &(q)->root_rl; (rl); (rl) = __blk_queue_next_rl((rl), (q)))
 
 #else
 struct cgroup;
@@ -339,7 +427,8 @@ static inline int
 blkiocg_del_blkio_group(struct blkio_group *blkg) { return 0; }
 
 static inline struct blkio_group *
-blkiocg_lookup_group(struct blkio_cgroup *blkcg, void *key) { return NULL; }
+blkiocg_lookup_group(struct blkio_cgroup *blkcg, struct request_queue *q,
+		enum blkio_policy_id plid) { return NULL; }
 static inline void blkiocg_update_timeslice_used(struct blkio_group *blkg,
 						unsigned long time) {}
 static inline void blkiocg_update_dispatch_stats(struct blkio_group *blkg,

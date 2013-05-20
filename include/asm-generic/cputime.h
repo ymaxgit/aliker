@@ -30,16 +30,10 @@ typedef u64 cputime64_t;
 #define cputime64_to_jiffies64(__ct)	(__ct)
 #define jiffies64_to_cputime64(__jif)	(__jif)
 #define cputime_to_cputime64(__ct)	((u64) __ct)
+#define cputime64_gt(__a, __b)		((__a) >  (__b))
 
-/*
- * Convert cputime to microseconds and back.
- *
- * XXX: these macros is only called by get_idle_time()
- *      and get_iowait_time() in fs/proc/stat.c.
- *      Ref. d57af9b2142f31a39dcfdeb30776baadfc802827
- */
-#define cputime_to_usecs(__ct)          jiffies_to_usecs(__ct)
-#define usecs_to_cputime(__msecs)       usecs_to_jiffies(__msecs)
+#define nsecs_to_cputime64(__ct)	nsecs_to_jiffies64(__ct)
+
 
 /*
  * Convert cputime to milliseconds and back.
@@ -52,6 +46,7 @@ typedef u64 cputime64_t;
  */
 #define cputime_to_usecs(__ct)		jiffies_to_usecs(__ct)
 #define usecs_to_cputime(__msecs)	usecs_to_jiffies(__msecs)
+#define usecs_to_cputime64(__msecs)	nsecs_to_jiffies64((__msecs) * 1000)
 
 /*
  * Convert cputime to seconds and back.

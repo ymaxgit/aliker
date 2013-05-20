@@ -61,6 +61,9 @@ struct dm_io_request {
 	struct dm_io_memory mem;	/* Memory to use for io */
 	struct dm_io_notify notify;	/* Synchronous if notify.fn is NULL */
 	struct dm_io_client *client;	/* Client memory handler */
+	int only_create_bio;
+	struct bio *start;
+	struct bio *end;
 };
 
 /*

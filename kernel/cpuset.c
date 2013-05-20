@@ -59,13 +59,6 @@
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
 #include <linux/cgroup.h>
-#include <linux/kernel_stat.h>
-
-#ifdef CONFIG_CGROUP_CPUACCT
-extern struct kernel_cpustat *cgroup_ca_kcpustat_ptr(struct cgroup*, int);
-#else
-struct kernel_cpustat *cgroup_ca_kcpustat_ptr(struct cgroup*, int) { return NULL; }
-#endif
 
 /*
  * Tracks how many cpusets are currently defined in system.
@@ -113,12 +106,6 @@ static inline struct cpuset *cgroup_cs(struct cgroup *cont)
 {
 	return container_of(cgroup_subsys_state(cont, cpuset_subsys_id),
 			    struct cpuset, css);
-}
-
-cpumask_var_t get_cs_cpu_allowed(struct cgroup *cgrp)
-{
-	struct cpuset *cs = cgroup_cs(cgrp);
-	return cs->cpus_allowed;
 }
 
 /* Retrieve the cpuset for a task */
@@ -860,7 +847,6 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 	struct ptr_heap heap;
 	int retval;
 	int is_load_balanced;
-	struct cpumask new_added;
 
 	/* top_cpuset.cpus_allowed tracks cpu_online_map; it's read-only */
 	if (cs == &top_cpuset)
@@ -895,44 +881,6 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 		return retval;
 
 	is_load_balanced = is_sched_load_balance(trialcs);
-
-#ifdef CONFIG_CGROUP_CPUACCT
-	if (likely(cpuacct_subsys.active)) {
-		struct cgroup *cgrp;
-		int i;
-
-		memset(&new_added, 0, sizeof(new_added));
-		/* new_added = new - old = new & (~old) */
-		cpumask_andnot(&new_added, trialcs->cpus_allowed, cs->cpus_allowed);
-		if (!cpumask_empty(&new_added)) {
-			cgrp = cs->css.cgroup;
-			if (cgroup_subsys_state(cgrp, cpuacct_subsys_id)) {
-				struct kernel_cpustat *kcpustat;
-				for_each_cpu_and(i, cpu_possible_mask, &new_added) {
-					kcpustat = cgroup_ca_kcpustat_ptr(cgrp, i);
-					kcpustat->cpustat[CPUTIME_IDLE_BASE] =
-						kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
-					kcpustat->cpustat[CPUTIME_IOWAIT_BASE] =
-						kcpustat_cpu(i).cpustat[CPUTIME_IOWAIT];
-					kcpustat->cpustat[CPUTIME_STEAL_BASE] =
-						kcpustat_cpu(i).cpustat[CPUTIME_USER]
-						+ kcpustat_cpu(i).cpustat[CPUTIME_NICE]
-						+ kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM]
-						+ kcpustat_cpu(i).cpustat[CPUTIME_IRQ]
-						+ kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ]
-						+ kcpustat_cpu(i).cpustat[CPUTIME_GUEST];
-
-					kcpustat->cpustat[CPUTIME_USER] = 0;
-					kcpustat->cpustat[CPUTIME_SYSTEM] = 0;
-					kcpustat->cpustat[CPUTIME_NICE] = 0;
-					kcpustat->cpustat[CPUTIME_IRQ] = 0;
-					kcpustat->cpustat[CPUTIME_SOFTIRQ] = 0;
-					kcpustat->cpustat[CPUTIME_GUEST] = 0;
-				}
-			}
-		}
-	}
-#endif
 
 	mutex_lock(&callback_mutex);
 	cpumask_copy(cs->cpus_allowed, trialcs->cpus_allowed);
@@ -2235,23 +2183,6 @@ void cpuset_cpus_allowed(struct task_struct *tsk, struct cpumask *pmask)
 	guarantee_online_cpus(task_cs(tsk), pmask);
 	task_unlock(tsk);
 	mutex_unlock(&callback_mutex);
-}
-
-void get_tsk_cpu_allowed(struct task_struct *tsk, struct cpumask *pmask)
-{
-	struct cpuset *cs = NULL;
-
-	mutex_lock(&callback_mutex);
-	task_lock(tsk);
-	cs = task_cs(tsk);
-	if (cs)
-		cpumask_and(pmask, cs->cpus_allowed, cpu_possible_mask);
-	else
-		cpumask_copy(pmask, cpu_possible_mask);
-	task_unlock(tsk);
-	mutex_unlock(&callback_mutex);
-
-	return;
 }
 
 int cpuset_cpus_allowed_fallback(struct task_struct *tsk)

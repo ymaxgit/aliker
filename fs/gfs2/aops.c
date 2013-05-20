@@ -630,7 +630,7 @@ static int gfs2_write_begin(struct file *file, struct address_space *mapping,
 	unsigned int data_blocks = 0, ind_blocks = 0, rblocks;
 	int alloc_required;
 	int error = 0;
-	struct gfs2_alloc *al = NULL;
+	struct gfs2_qadata *qa = NULL;
 	pgoff_t index = pos >> PAGE_CACHE_SHIFT;
 	unsigned from = pos & (PAGE_CACHE_SIZE - 1);
 	unsigned to = from + len;
@@ -657,8 +657,8 @@ static int gfs2_write_begin(struct file *file, struct address_space *mapping,
 		gfs2_write_calc_reserv(ip, len, &data_blocks, &ind_blocks);
 
 	if (alloc_required) {
-		al = gfs2_alloc_get(ip);
-		if (!al) {
+		qa = gfs2_qadata_get(ip);
+		if (!qa) {
 			error = -ENOMEM;
 			goto out_unlock;
 		}
@@ -667,8 +667,7 @@ static int gfs2_write_begin(struct file *file, struct address_space *mapping,
 		if (error)
 			goto out_alloc_put;
 
-		al->al_requested = data_blocks + ind_blocks;
-		error = gfs2_inplace_reserve(ip);
+		error = gfs2_inplace_reserve(ip, data_blocks + ind_blocks);
 		if (error)
 			goto out_qunlock;
 	}
@@ -680,8 +679,8 @@ static int gfs2_write_begin(struct file *file, struct address_space *mapping,
 		rblocks += RES_STATFS + RES_QUOTA;
 	if (&ip->i_inode == sdp->sd_rindex)
 		rblocks += 2 * RES_STATFS;
-	if (al)
-		rblocks += gfs2_rg_blocks(al);
+	if (qa)
+		rblocks += gfs2_rg_blocks(ip);
 
 	error = gfs2_trans_begin(sdp, rblocks,
 				 PAGE_CACHE_SIZE/sdp->sd_sb.sb_bsize);
@@ -725,7 +724,7 @@ out_trans_fail:
 out_qunlock:
 		gfs2_quota_unlock(ip);
 out_alloc_put:
-		gfs2_alloc_put(ip);
+		gfs2_qadata_put(ip);
 	}
 out_unlock:
 	if (&ip->i_inode == sdp->sd_rindex) {
@@ -826,7 +825,7 @@ static int gfs2_stuffed_write_end(struct inode *inode, struct buffer_head *dibh,
 
 	if (inode == sdp->sd_rindex) {
 		adjust_fs_space(inode);
-		ip->i_gh.gh_flags |= GL_NOCACHE;
+		sdp->sd_rindex_uptodate = 0;
 	}
 
 	brelse(dibh);
@@ -866,10 +865,11 @@ static int gfs2_write_end(struct file *file, struct address_space *mapping,
 	struct gfs2_sbd *sdp = GFS2_SB(inode);
 	struct gfs2_inode *m_ip = GFS2_I(sdp->sd_statfs_inode);
 	struct buffer_head *dibh;
-	struct gfs2_alloc *al = ip->i_alloc;
+	struct gfs2_qadata *qa = ip->i_qadata;
 	unsigned int from = pos & (PAGE_CACHE_SIZE - 1);
 	unsigned int to = from + len;
 	int ret;
+	int i_size_changed = 0;
 
 	BUG_ON(gfs2_glock_is_locked_by_me(ip->i_gl) == NULL);
 
@@ -888,26 +888,36 @@ static int gfs2_write_end(struct file *file, struct address_space *mapping,
 	if (!gfs2_is_writeback(ip))
 		gfs2_page_add_databufs(ip, page, from, to);
 
-	ret = generic_write_end(file, mapping, pos, len, copied, page, fsdata);
-	if (ret > 0) {
-		if (inode->i_size > ip->i_disksize)
-			ip->i_disksize = inode->i_size;
+	/* inlined bits of generic_write_end to avoid marking the inode dirty
+	   a second time: */
+	ret = block_write_end(file, mapping, pos, len, copied, page, fsdata);
+	if (pos + ret > ip->i_disksize) {
+		ip->i_disksize = pos + ret;
+		i_size_write(inode, pos + ret);
+		i_size_changed = 1;
+	}
+
+	unlock_page(page);
+	page_cache_release(page);
+
+	if (i_size_changed) {
 		gfs2_dinode_out(ip, dibh->b_data);
 		mark_inode_dirty(inode);
 	}
 
 	if (inode == sdp->sd_rindex) {
 		adjust_fs_space(inode);
-		ip->i_gh.gh_flags |= GL_NOCACHE;
+		sdp->sd_rindex_uptodate = 0;
 	}
 
 	brelse(dibh);
 	gfs2_trans_end(sdp);
 failed:
-	if (al) {
+	if (ip->i_res)
 		gfs2_inplace_release(ip);
+	if (qa) {
 		gfs2_quota_unlock(ip);
-		gfs2_alloc_put(ip);
+		gfs2_qadata_put(ip);
 	}
 	if (inode == sdp->sd_rindex) {
 		gfs2_glock_dq(&m_ip->i_gh);

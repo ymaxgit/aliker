@@ -251,3 +251,5 @@ void __flush_anon_page(struct vm_area_struct *vma, struct page *page, unsigned l
 	 */
 	__cpuc_flush_dcache_page(page_address(page));
 }
+EXPORT_SYMBOL(__flush_anon_page);
+

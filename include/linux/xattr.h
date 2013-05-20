@@ -17,9 +17,6 @@
 
 #include <linux/types.h>
 
-#define XATTR_SUBTREE "system.subtree"
-#define XATTR_SUBTREE_LEN (sizeof(XATTR_SUBTREE))
-
 /* Namespaces */
 #define XATTR_OS2_PREFIX "os2."
 #define XATTR_OS2_PREFIX_LEN (sizeof (XATTR_OS2_PREFIX) - 1)

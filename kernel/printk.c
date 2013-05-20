@@ -587,6 +587,9 @@ static int printk_time = 0;
 #endif
 module_param_named(time, printk_time, bool, S_IRUGO | S_IWUSR);
 
+static bool always_kmsg_dump;
+module_param_named(always_kmsg_dump, always_kmsg_dump, bool, S_IRUGO | S_IWUSR);
+
 /* Check if we have any console registered that can be called early in boot. */
 static int have_callable_console(void)
 {
@@ -802,6 +805,13 @@ asmlinkage int vprintk(const char *fmt, va_list args)
 				for (tp = tbuf; tp < tbuf + tlen; tp++)
 					emit_log_char(*tp);
 				printed_len += tlen;
+			}
+			if (test_taint(TAINT_BIT_BY_ZOMBIE)) {
+				/* len is 21 */
+				char tbuf[] = "[BRRAAIIIINNNSSSSS!] ";
+				char *tp;
+				for (tp = tbuf; tp < tbuf + 21; tp++)
+					emit_log_char(*tp);
 			}
 
 			if (!*p)
@@ -1503,6 +1513,10 @@ static const char const *kmsg_reasons[] = {
 	[KMSG_DUMP_OOPS]	= "oops",
 	[KMSG_DUMP_PANIC]	= "panic",
 	[KMSG_DUMP_KEXEC]	= "kexec",
+	[KMSG_DUMP_RESTART]	= "restart",
+	[KMSG_DUMP_HALT]	= "halt",
+	[KMSG_DUMP_POWEROFF]	= "poweroff",
+	[KMSG_DUMP_EMERG]	= "emergency_restart",
 };
 
 static const char *kmsg_to_str(enum kmsg_dump_reason reason)
@@ -1529,6 +1543,9 @@ void kmsg_dump(enum kmsg_dump_reason reason, struct pt_regs *pt_regs)
 	unsigned long l1, l2;
 	unsigned long flags;
 
+	if ((reason > KMSG_DUMP_OOPS) && !always_kmsg_dump)
+		return;
+
 	/* Theoretically, the log could move on after we do this, but
 	   there's not a lot we can do about that. The new messages
 	   will overwrite the start of what we dump. */
@@ -1551,10 +1568,11 @@ void kmsg_dump(enum kmsg_dump_reason reason, struct pt_regs *pt_regs)
 		l2 = chars;
 	}
 
-	if (!spin_trylock_irqsave(&dump_list_lock, flags))
-		printk(KERN_ERR "dump_kmsg: dump list lock is held during %s, try to dump directly\n",
+	if (!spin_trylock_irqsave(&dump_list_lock, flags)) {
+		printk(KERN_ERR "dump_kmsg: dump list lock is held during %s, skipping dump\n",
 				kmsg_to_str(reason));
-
+		return;
+	}
 	list_for_each_entry(dumper, &dump_list, list)
 		dumper->dump(dumper, reason, pt_regs, s1, l1, s2, l2);
 	spin_unlock_irqrestore(&dump_list_lock, flags);

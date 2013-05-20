@@ -13,7 +13,6 @@
 #include <asm/atomic.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
-#include <linux/pid_namespace.h>
 #include "internal.h"
 
 void __attribute__((weak)) arch_report_meminfo(struct seq_file *m)
@@ -29,37 +28,26 @@ static int meminfo_proc_show(struct seq_file *m, void *v)
 	long cached;
 	unsigned long pages[NR_LRU_LISTS];
 	int lru;
-	bool instance_view = false;
-	struct mem_cgroup *memcg = NULL;
-
-	if (in_noninit_pid_ns(current->nsproxy->pid_ns) &&
-	     !mem_cgroup_disabled()) {
-		instance_view = true;
-		memcg = mem_cgroup_from_task(current);
-	}
 
 /*
  * display in kilobytes.
  */
 #define K(x) ((x) << (PAGE_SHIFT - 10))
-	if (!instance_view) {
-		si_meminfo(&i);
-		si_swapinfo(&i);
-		cached = global_page_state(NR_FILE_PAGES) -
-			total_swapcache_pages - i.bufferram;
-		if (cached < 0)
-			cached = 0;
-		for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
-			pages[lru] = global_page_state(NR_LRU_BASE + lru);
-	} else {
-		cgroup_mem_sw_info(&i, memcg, &cached, pages);
-	}
+	si_meminfo(&i);
+	si_swapinfo(&i);
 	committed = percpu_counter_read_positive(&vm_committed_as);
 	allowed = ((totalram_pages - hugetlb_total_pages())
 		* sysctl_overcommit_ratio / 100) + total_swap_pages;
 
+	cached = global_page_state(NR_FILE_PAGES) -
+			total_swapcache_pages - i.bufferram;
+	if (cached < 0)
+		cached = 0;
+
 	get_vmalloc_info(&vmi);
 
+	for (lru = LRU_BASE; lru < NR_LRU_LISTS; lru++)
+		pages[lru] = global_page_state(NR_LRU_BASE + lru);
 
 	/*
 	 * Tagged format, for easy grepping and expansion.

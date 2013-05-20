@@ -22,10 +22,6 @@
 #define kdebug(FMT, ...) \
 	printk("[%-5.5s%5u] "FMT"\n", current->comm, current->pid ,##__VA_ARGS__)
 #else
-static inline __attribute__((format(printf, 1, 2)))
-void no_printk(const char *fmt, ...)
-{
-}
 #define kdebug(FMT, ...) \
 	no_printk("[%-5.5s%5u] "FMT"\n", current->comm, current->pid ,##__VA_ARGS__)
 #endif
@@ -443,6 +439,7 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 	int ret;
 
 	mutex_init(&p->cred_guard_mutex);
+	p->replacement_session_keyring = NULL;
 
 	if (
 #ifdef CONFIG_KEYS

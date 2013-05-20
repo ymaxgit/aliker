@@ -411,8 +411,7 @@ void sctp_retransmit_mark(struct sctp_outq *q,
 					chunk->transport->flight_size -=
 							sctp_data_size(chunk);
 				q->outstanding_bytes -= sctp_data_size(chunk);
-				q->asoc->peer.rwnd += (sctp_data_size(chunk) +
-							sizeof(struct sk_buff));
+				q->asoc->peer.rwnd += sctp_data_size(chunk);
 			}
 			continue;
 		}
@@ -432,8 +431,7 @@ void sctp_retransmit_mark(struct sctp_outq *q,
 			 * (Section 7.2.4)), add the data size of those
 			 * chunks to the rwnd.
 			 */
-			q->asoc->peer.rwnd += (sctp_data_size(chunk) +
-						sizeof(struct sk_buff));
+			q->asoc->peer.rwnd += sctp_data_size(chunk);
 			q->outstanding_bytes -= sctp_data_size(chunk);
 			if (chunk->transport)
 				transport->flight_size -= sctp_data_size(chunk);
@@ -786,7 +784,8 @@ static int sctp_outq_flush(struct sctp_outq *q, int rtx_timeout)
 			if (!new_transport)
 				new_transport = asoc->peer.active_path;
 		} else if ((new_transport->state == SCTP_INACTIVE) ||
-			   (new_transport->state == SCTP_UNCONFIRMED)) {
+			   (new_transport->state == SCTP_UNCONFIRMED) ||
+			   (new_transport->state == SCTP_PF)) {
 			/* If the chunk is Heartbeat or Heartbeat Ack,
 			 * send it to chunk->transport, even if it's
 			 * inactive.
@@ -976,7 +975,8 @@ static int sctp_outq_flush(struct sctp_outq *q, int rtx_timeout)
 			new_transport = chunk->transport;
 			if (!new_transport ||
 			    ((new_transport->state == SCTP_INACTIVE) ||
-			     (new_transport->state == SCTP_UNCONFIRMED)))
+			     (new_transport->state == SCTP_UNCONFIRMED) ||
+			     (new_transport->state == SCTP_PF)))
 				new_transport = asoc->peer.active_path;
 
 			/* Change packets if necessary.  */

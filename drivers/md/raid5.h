@@ -6,7 +6,7 @@
 
 /*
  *
- * Each stripe contains one buffer per disc.  Each buffer can be in
+ * Each stripe contains one buffer per device.  Each buffer can be in
  * one of a number of states stored in "flags".  Changes between
  * these states happen *almost* exclusively under a per-stripe
  * spinlock.  Some very specific changes can happen in bi_end_io, and
@@ -76,12 +76,10 @@
  * block and the cached buffer are successfully written, any buffer on
  * a written list can be returned with b_end_io.
  *
- * The write list and read list both act as fifos.  The read list is
- * protected by the device_lock.  The write and written lists are
- * protected by the stripe lock.  The device_lock, which can be
- * claimed while the stipe lock is held, is only for list
- * manipulations and will only be held for a very short time.  It can
- * be claimed from interrupts.
+ * The write list and read list both act as fifos.  The read list,
+ * write list and written list are protected by the device_lock.
+ * The device_lock is only for list manipulations and will only be
+ * held for a very short time.  It can be claimed from interrupts.
  *
  *
  * Stripes in the stripe cache can be on one of two lists (or on
@@ -159,7 +157,8 @@
  */
 
 /*
- * Operations state - intermediate states that are visible outside of sh->lock
+ * Operations state - intermediate states that are visible outside of 
+ *   STRIPE_ACTIVE.
  * In general _idle indicates nothing is running, _run indicates a data
  * processing operation is active, and _result means the data processing result
  * is stable and can be acted upon.  For simple operations like biofill and
@@ -200,7 +199,7 @@ enum reconstruct_states {
 struct stripe_head {
 	struct hlist_node	hash;
 	struct list_head	lru;	      /* inactive_list or handle_list */
-	struct raid5_private_data *raid_conf;
+	struct r5conf		*raid_conf;
 	short			generation;	/* increments with every
 						 * reshape */
 	sector_t		sector;		/* sector of this row */
@@ -246,13 +245,14 @@ struct stripe_head_state {
 	int syncing, expanding, expanded;
 	int locked, uptodate, to_read, to_write, failed, written;
 	int to_fill, compute, req_compute, non_overwrite;
-	int failed_num;
+	int failed_num[2];
+	int p_failed, q_failed;
+	int dec_preread_active;
 	unsigned long ops_request;
-};
 
-/* r6_state - extra state data only relevant to r6 */
-struct r6_state {
-	int p_failed, q_failed, failed_num[2];
+	struct bio *return_bi;
+	struct md_rdev *blocked_rdev;
+	int handle_bad_blocks;
 };
 
 /* Flags */
@@ -268,14 +268,16 @@ struct r6_state {
 #define	R5_ReWrite	9	/* have tried to over-write the readerror */
 
 #define	R5_Expanded	10	/* This block now has post-expand data */
-#define	R5_Wantcompute	11 /* compute_block in progress treat as
-				    * uptodate
-				    */
-#define	R5_Wantfill	12 /* dev->toread contains a bio that needs
-				    * filling
-				    */
-#define R5_Wantdrain	13 /* dev->towrite needs to be drained */
-#define R5_WantFUA	14	/* Write should be FUA */
+#define	R5_Wantcompute	11	/* compute_block in progress treat as
+				 * uptodate
+				 */
+#define	R5_Wantfill	12	/* dev->toread contains a bio that needs
+				 * filling
+				 */
+#define	R5_Wantdrain	13	/* dev->towrite needs to be drained */
+#define	R5_WantFUA	14	/* Write should be FUA */
+#define	R5_WriteError	15	/* got a write error - need to record it */
+#define	R5_MadeGood	16	/* A bad block has been fixed by writing to it*/
 /*
  * Write method
  */
@@ -289,21 +291,24 @@ struct r6_state {
 /*
  * Stripe state
  */
-#define STRIPE_HANDLE		2
-#define	STRIPE_SYNCING		3
-#define	STRIPE_INSYNC		4
-#define	STRIPE_PREREAD_ACTIVE	5
-#define	STRIPE_DELAYED		6
-#define	STRIPE_DEGRADED		7
-#define	STRIPE_BIT_DELAY	8
-#define	STRIPE_EXPANDING	9
-#define	STRIPE_EXPAND_SOURCE	10
-#define	STRIPE_EXPAND_READY	11
-#define	STRIPE_IO_STARTED	12 /* do not count towards 'bypass_count' */
-#define	STRIPE_FULL_WRITE	13 /* all blocks are set to be overwritten */
-#define	STRIPE_BIOFILL_RUN	14
-#define	STRIPE_COMPUTE_RUN	15
-#define	STRIPE_OPS_REQ_PENDING	16
+enum {
+	STRIPE_HANDLE,
+	STRIPE_SYNC_REQUESTED,
+	STRIPE_SYNCING,
+	STRIPE_INSYNC,
+	STRIPE_PREREAD_ACTIVE,
+	STRIPE_DELAYED,
+	STRIPE_DEGRADED,
+	STRIPE_BIT_DELAY,
+	STRIPE_EXPANDING,
+	STRIPE_EXPAND_SOURCE,
+	STRIPE_EXPAND_READY,
+	STRIPE_IO_STARTED,	/* do not count towards 'bypass_count' */
+	STRIPE_FULL_WRITE,	/* all blocks are set to be overwritten */
+	STRIPE_BIOFILL_RUN,
+	STRIPE_COMPUTE_RUN,
+	STRIPE_OPS_REQ_PENDING,
+};
 
 /*
  * Operation request flags
@@ -336,17 +341,17 @@ struct r6_state {
  * PREREAD_ACTIVE.
  * In stripe_handle, if we find pre-reading is necessary, we do it if
  * PREREAD_ACTIVE is set, else we set DELAYED which will send it to the delayed queue.
- * HANDLE gets cleared if stripe_handle leave nothing locked.
+ * HANDLE gets cleared if stripe_handle leaves nothing locked.
  */
 
 
 struct disk_info {
-	mdk_rdev_t	*rdev;
+	struct md_rdev	*rdev;
 };
 
-struct raid5_private_data {
+struct r5conf {
 	struct hlist_head	*stripe_hashtbl;
-	mddev_t			*mddev;
+	struct mddev		*mddev;
 	struct disk_info	*spare;
 	int			chunk_sectors;
 	int			level, algorithm;
@@ -402,6 +407,7 @@ struct raid5_private_data {
 
 	struct plug_handle	plug;
 
+	int			recovery_disabled;
 	/* per cpu variables */
 	struct raid5_percpu {
 		struct page	*spare_page; /* Used when checking P/Q in raid6 */
@@ -435,10 +441,8 @@ struct raid5_private_data {
 	/* When taking over an array from a different personality, we store
 	 * the new thread here until we fully activate the array.
 	 */
-	struct mdk_thread_s	*thread;
+	struct md_thread	*thread;
 };
-
-typedef struct raid5_private_data raid5_conf_t;
 
 /*
  * Our supported algorithms
@@ -502,7 +506,7 @@ static inline int algorithm_is_DDF(int layout)
 	return layout >= 8 && layout <= 10;
 }
 
-extern int md_raid5_congested(mddev_t *mddev, int bits);
-extern void md_raid5_unplug_device(raid5_conf_t *conf);
-extern int raid5_set_cache_size(mddev_t *mddev, int size);
+extern int md_raid5_congested(struct mddev *mddev, int bits);
+extern void md_raid5_unplug_device(struct r5conf *conf);
+extern int raid5_set_cache_size(struct mddev *mddev, int size);
 #endif

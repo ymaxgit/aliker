@@ -29,7 +29,7 @@
 extern void apic_timer_interrupt(void);
 extern void x86_platform_ipi(void);
 extern void error_interrupt(void);
-extern void perf_pending_interrupt(void);
+extern void irq_work_interrupt(void);
 
 extern void spurious_interrupt(void);
 extern void thermal_interrupt(void);
@@ -66,7 +66,7 @@ extern unsigned long io_apic_irqs;
 
 extern void init_VISWS_APIC_irqs(void);
 extern void setup_IO_APIC(void);
-extern void disable_IO_APIC(void);
+extern void disable_IO_APIC(int);
 
 struct io_apic_irq_attr {
 	int ioapic;

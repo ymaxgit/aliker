@@ -42,6 +42,8 @@
 #include <linux/kprobes.h>
 #include <linux/user_namespace.h>
 
+#include <linux/kmsg_dump.h>
+
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/unistd.h>
@@ -280,6 +282,7 @@ out_unlock:
  */
 void emergency_restart(void)
 {
+	kmsg_dump(KMSG_DUMP_EMERG, NULL);
 	machine_emergency_restart();
 }
 EXPORT_SYMBOL_GPL(emergency_restart);
@@ -307,6 +310,7 @@ void kernel_restart(char *cmd)
 		printk(KERN_EMERG "Restarting system.\n");
 	else
 		printk(KERN_EMERG "Restarting system with command '%s'.\n", cmd);
+	kmsg_dump(KMSG_DUMP_RESTART, NULL);
 	machine_restart(cmd);
 }
 EXPORT_SYMBOL_GPL(kernel_restart);
@@ -328,6 +332,7 @@ void kernel_halt(void)
 	kernel_shutdown_prepare(SYSTEM_HALT);
 	sysdev_shutdown();
 	printk(KERN_EMERG "System halted.\n");
+	kmsg_dump(KMSG_DUMP_HALT, NULL);
 	machine_halt();
 }
 
@@ -346,6 +351,7 @@ void kernel_power_off(void)
 	disable_nonboot_cpus();
 	sysdev_shutdown();
 	printk(KERN_EMERG "Power down.\n");
+	kmsg_dump(KMSG_DUMP_POWEROFF, NULL);
 	machine_power_off();
 }
 EXPORT_SYMBOL_GPL(kernel_power_off);
@@ -363,6 +369,10 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	char buffer[256];
 	int ret = 0;
 
+	/* We only trust the superuser with rebooting the system. */
+	if (!capable(CAP_SYS_BOOT))
+		return -EPERM;
+
 	/* For safety, we require "magic" arguments. */
 	if (magic1 != LINUX_REBOOT_MAGIC1 ||
 	    (magic2 != LINUX_REBOOT_MAGIC2 &&
@@ -370,44 +380,6 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 			magic2 != LINUX_REBOOT_MAGIC2B &&
 	                magic2 != LINUX_REBOOT_MAGIC2C))
 		return -EINVAL;
-
-	/* We only trust the superuser with rebooting the system. */
-	if (!capable(CAP_SYS_BOOT)) {
-		if (in_noninit_pid_ns(current->nsproxy->pid_ns) &&
-				current_euid() == 0 &&
-				(cmd == LINUX_REBOOT_CMD_RESTART ||
-				 cmd == LINUX_REBOOT_CMD_HALT ||
-				 cmd == LINUX_REBOOT_CMD_POWER_OFF)) {
-			char *argv[5], *envp[3], *buf = NULL;
-			int i = 0;
-			struct pid_namespace *pid_ns = task_active_pid_ns(current);
-			pid_t pid;
-
-			if (!(buf = kmalloc(32, GFP_KERNEL)))
-				return -EPERM;
-			pid = pid_nr(task_pid(pid_ns->child_reaper));
-			snprintf(buf, 32, "%d", pid);
-			argv[0] = "/bin/bash";
-			argv[1] = "/opt/appcommon/bin/lxc-reboot.sh";
-			argv[2] = buf;
-			if (cmd == LINUX_REBOOT_CMD_RESTART)
-				argv[3] = "restart";
-			else
-				argv[3] = "stop";
-			argv[4] = NULL;
-
-			i = 0;
-			/* minimal command environment */
-			envp[i++] = "HOME=/";
-			envp[i++] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
-			envp[i] = NULL;
-
-			call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
-			kfree(buf);
-			return ret;
-		} else
-			return -EPERM;
-	}
 
 	/* Instead of trying to make the power_off code look like
 	 * halt when pm_power_off is not set do it the easy way.

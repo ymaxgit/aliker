@@ -421,7 +421,7 @@ static int bdi_forker_task(void *ptr)
 			if (wait)
 				schedule_timeout(wait);
 			else
-				schedule_timeout(5UL * 60 * HZ);
+				schedule();
 			try_to_freeze();
 			continue;
 		}

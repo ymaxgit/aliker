@@ -21,7 +21,6 @@
 #define EXT3_XATTR_INDEX_TRUSTED		4
 #define	EXT3_XATTR_INDEX_LUSTRE			5
 #define EXT3_XATTR_INDEX_SECURITY	        6
-#define EXT3_XATTR_INDEX_SUBTREE		7
 
 struct ext3_xattr_header {
 	__le32	h_magic;	/* magic number for identification */
@@ -64,7 +63,6 @@ extern struct xattr_handler ext3_xattr_trusted_handler;
 extern struct xattr_handler ext3_xattr_acl_access_handler;
 extern struct xattr_handler ext3_xattr_acl_default_handler;
 extern struct xattr_handler ext3_xattr_security_handler;
-extern struct xattr_handler ext3_xattr_subtree_handler;
 
 extern ssize_t ext3_listxattr(struct dentry *, char *, size_t);
 

@@ -841,6 +841,8 @@ static void ipv6_del_addr(struct inet6_ifaddr *ifp)
 		dst_release(&rt->u.dst);
 	}
 
+	/* clean up prefsrc entries */
+	rt6_remove_prefsrc(ifp);
 out:
 	in6_ifa_put(ifp);
 }
@@ -3566,6 +3568,8 @@ static int inet6_dump_addr(struct sk_buff *skb, struct netlink_callback *cb,
 							cb->nlh->nlmsg_seq,
 							RTM_NEWADDR,
 							NLM_F_MULTI);
+				if (err <= 0)
+					break;
 			}
 			break;
 		case MULTICAST_ADDR:
@@ -3579,6 +3583,8 @@ static int inet6_dump_addr(struct sk_buff *skb, struct netlink_callback *cb,
 							  cb->nlh->nlmsg_seq,
 							  RTM_GETMULTICAST,
 							  NLM_F_MULTI);
+				if (err <= 0)
+					break;
 			}
 			break;
 		case ANYCAST_ADDR:
@@ -3592,6 +3598,8 @@ static int inet6_dump_addr(struct sk_buff *skb, struct netlink_callback *cb,
 							  cb->nlh->nlmsg_seq,
 							  RTM_GETANYCAST,
 							  NLM_F_MULTI);
+				if (err <= 0)
+					break;
 			}
 			break;
 		default:

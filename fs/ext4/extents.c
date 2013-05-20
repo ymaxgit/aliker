@@ -1718,7 +1718,7 @@ int ext4_ext_insert_extent(handle_t *handle, struct inode *inode,
 	}
 
 	/* try to insert block into found extent and return */
-	if (ex && (flag != EXT4_GET_BLOCKS_DIO_CREATE_EXT)
+	if (ex && !(flag & EXT4_GET_BLOCKS_DIO)
 		&& ext4_can_extents_be_merged(inode, ex, newext)) {
 		ext_debug("append [%d]%d block to %d:[%d]%d (from %llu)\n",
 				ext4_ext_is_uninitialized(newext),
@@ -1839,7 +1839,7 @@ has_space:
 
 merge:
 	/* try to merge extents to the right */
-	if (flag != EXT4_GET_BLOCKS_DIO_CREATE_EXT)
+	if (!(flag & EXT4_GET_BLOCKS_DIO))
 		ext4_ext_try_to_merge(inode, path, nearex);
 
 	/* try to merge extents to the left */
@@ -3071,6 +3071,7 @@ static int ext4_split_unwritten_extents(handle_t *handle,
 		ex1 = ex;
 		ex1->ee_len = cpu_to_le16(iblock - ee_block);
 		ext4_ext_mark_uninitialized(ex1);
+		ext4_ext_dirty(handle, inode, path + depth);
 		ex2 = &newex;
 	}
 	/*
@@ -3144,6 +3145,7 @@ static int ext4_split_unwritten_extents(handle_t *handle,
 		ex1 = ex;
 		ex1->ee_len = cpu_to_le16(iblock - ee_block);
 		ext4_ext_mark_uninitialized(ex1);
+		ext4_ext_dirty(handle, inode, path + depth);
 		ex2 = &newex;
 	}
 	/*
@@ -3511,7 +3513,7 @@ ext4_ext_handle_uninitialized_extents(handle_t *handle, struct inode *inode,
 			allocated, newblock);
 
 	/* DIO get_block() before submit the IO, split the extent */
-	if (flags == EXT4_GET_BLOCKS_DIO_CREATE_EXT) {
+	if ((flags & EXT4_GET_BLOCKS_DIO)) {
 		ret = ext4_split_unwritten_extents(handle,
 						inode, path, map->m_lblk,
 						map->m_len, flags);
@@ -3525,10 +3527,14 @@ ext4_ext_handle_uninitialized_extents(handle_t *handle, struct inode *inode,
 			atomic_inc(&EXT4_I(inode)->i_aiodio_unwritten);
 		} else
 			ext4_set_inode_state(inode, EXT4_STATE_DIO_UNWRITTEN);
+		if (ext4_should_dioread_nolock(inode)) {
+			set_buffer_uninit(bh_result);
+			map->m_flags |= EXT4_MAP_UNINIT;
+		}
 		goto out;
 	}
 	/* async DIO end_io complete, convert the filled extent to written */
-	if (flags == EXT4_GET_BLOCKS_DIO_CONVERT_EXT) {
+	if ((flags & EXT4_GET_BLOCKS_CONVERT)) {
 		ret = ext4_convert_unwritten_extents_dio(handle, inode,
 							path);
 		if (ret >= 0) {
@@ -3991,13 +3997,17 @@ got_allocated_blocks:
 		 * For non asycn direct IO case, flag the inode state
 		 * that we need to perform convertion when IO is done.
 		 */
-		if (flags == EXT4_GET_BLOCKS_DIO_CREATE_EXT) {
+		if ((flags & EXT4_GET_BLOCKS_DIO)) {
 			if (io && (io->flag != DIO_AIO_UNWRITTEN)) {
 				io->flag = DIO_AIO_UNWRITTEN;
 				atomic_inc(&EXT4_I(inode)->i_aiodio_unwritten);
 			} else
 				ext4_set_inode_state(inode,
 						     EXT4_STATE_DIO_UNWRITTEN);
+		}
+		if (ext4_should_dioread_nolock(inode)) {
+			set_buffer_uninit(bh_result);
+			map->m_flags |= EXT4_MAP_UNINIT;
 		}
 	}
 
@@ -4138,6 +4148,12 @@ void ext4_ext_truncate(struct inode *inode)
 	ext4_lblk_t last_block;
 	handle_t *handle;
 	int err = 0;
+
+	/*
+	 * finish any pending end_io work so we won't run the risk of
+	 * converting any truncated blocks to initialized later
+	 */
+	flush_aio_dio_completed_IO(inode);
 
 	/*
 	 * probably first extent we're gonna free will be last in block

@@ -89,6 +89,8 @@ static int flashcache_notify_reboot(struct notifier_block *this,
 				    unsigned long code, void *x);
 static void flashcache_sync_for_remove(struct cache_c *dmc);
 
+static int request_based = 0;
+
 extern char *flashcache_sw_version;
 
 static int
@@ -1535,6 +1537,19 @@ static struct target_type flashcache_target = {
 	.ioctl 	= flashcache_ioctl,
 };
 
+static struct target_type flashcache_request_based_target = {
+	.name   = "flashcache",
+	.version= {1, 0, 3},
+	.module = THIS_MODULE,
+	.ctr    = flashcache_ctr,
+	.dtr    = flashcache_dtr,
+	.mk_rq	= flashcache_mk_rq,
+	.map_rq = flashcache_map_rq,
+	.status = flashcache_status,
+	.ioctl 	= flashcache_ioctl,
+	.iterate_devices = flashcache_iterate_devices,
+};
+
 static void
 flashcache_sync_for_remove(struct cache_c *dmc)
 {
@@ -1681,7 +1696,10 @@ flashcache_init(void)
 #endif
 	for (r = 0 ; r < 33 ; r++)
 		size_hist[r] = 0;
-	r = dm_register_target(&flashcache_target);
+	if (request_based == 1)
+		r = dm_register_target(&flashcache_request_based_target);
+	else
+		r = dm_register_target(&flashcache_target);
 	if (r < 0) {
 		DMERR("cache: register failed %d", r);
 	}
@@ -1702,13 +1720,20 @@ flashcache_init(void)
 void 
 flashcache_exit(void)
 {
+	struct target_type *target;
+
+	if (request_based == 1)
+		target = &flashcache_request_based_target;
+	else
+		target = &flashcache_target;
+
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,27)
-	int r = dm_unregister_target(&flashcache_target);
+	int r = dm_unregister_target(target);
 
 	if (r < 0)
 		DMERR("cache: unregister failed %d", r);
 #else
-	dm_unregister_target(&flashcache_target);
+	dm_unregister_target(target);
 #endif
 #if LINUX_VERSION_CODE < KERNEL_VERSION(2,6,26)
 	kcopyd_client_destroy(flashcache_kcp_client);
@@ -1733,6 +1758,8 @@ EXPORT_SYMBOL(flashcache_writeback_load);
 EXPORT_SYMBOL(flashcache_writeback_create);
 EXPORT_SYMBOL(flashcache_writeback_md_store);
 
+MODULE_PARM_DESC(request_based, "Whether the flashcache is request-based");
+module_param(request_based, int, 0644);
 MODULE_DESCRIPTION(DM_NAME " Facebook flash cache target");
 MODULE_AUTHOR("Mohan - based on code by Ming");
 MODULE_LICENSE("GPL");

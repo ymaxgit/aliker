@@ -26,6 +26,7 @@
 #include "xfs_ag.h"
 #include "xfs_mount.h"
 #include "xfs_trans_priv.h"
+#include "xfs_trace.h"
 #include "xfs_error.h"
 
 STATIC void xfs_ail_splice(struct xfs_ail *, struct list_head *, xfs_lsn_t);
@@ -50,7 +51,7 @@ STATIC void xfs_ail_check(struct xfs_ail *, xfs_log_item_t *);
  * lsn of the last item in the AIL.
  */
 xfs_lsn_t
-xfs_trans_ail_tail(
+xfs_ail_min_lsn(
 	struct xfs_ail	*ailp)
 {
 	xfs_lsn_t	lsn;
@@ -85,7 +86,7 @@ xfs_trans_ail_tail(
  * any of the objects, so the lock is not needed.
  */
 void
-xfs_trans_ail_push(
+xfs_ail_push(
 	struct xfs_ail	*ailp,
 	xfs_lsn_t	threshold_lsn)
 {
@@ -96,6 +97,39 @@ xfs_trans_ail_push(
 		if (XFS_LSN_CMP(threshold_lsn, ailp->xa_target) > 0)
 			xfsaild_wakeup(ailp, threshold_lsn);
 	}
+}
+
+ /*
+ * Return a pointer to the last item in the AIL.  If the AIL is empty, then
+ * return NULL.
+ */
+static xfs_log_item_t *
+xfs_ail_max(
+	struct xfs_ail  *ailp)
+{
+	if (list_empty(&ailp->xa_ail))
+		return NULL;
+
+	return list_entry(ailp->xa_ail.prev, xfs_log_item_t, li_ail);
+}
+
+/*
+ * Return the maximum lsn held in the AIL, or zero if the AIL is empty.
+ */
+static xfs_lsn_t
+xfs_ail_max_lsn(
+	struct xfs_ail  *ailp)
+{
+	xfs_lsn_t       lsn = 0;
+	xfs_log_item_t  *lip;
+
+	spin_lock(&ailp->xa_lock);
+	lip = xfs_ail_max(ailp);
+	if (lip)
+		lsn = lip->li_lsn;
+	spin_unlock(&ailp->xa_lock);
+
+	return lsn;
 }
 
 /*
@@ -244,7 +278,7 @@ xfsaild_push(
 	struct xfs_ail	*ailp,
 	xfs_lsn_t	*last_lsn)
 {
-	long		tout = 0;
+	long		tout = 10;
 	xfs_lsn_t	last_pushed_lsn = *last_lsn;
 	xfs_lsn_t	target;
 	xfs_lsn_t	lsn;
@@ -301,26 +335,37 @@ xfsaild_push(
 		switch (lock_result) {
 		case XFS_ITEM_SUCCESS:
 			XFS_STATS_INC(xs_push_ail_success);
+			trace_xfs_ail_push(lip);
+
 			IOP_PUSH(lip);
 			last_pushed_lsn = lsn;
 			break;
 
 		case XFS_ITEM_PUSHBUF:
 			XFS_STATS_INC(xs_push_ail_pushbuf);
-			IOP_PUSHBUF(lip);
-			last_pushed_lsn = lsn;
+			trace_xfs_ail_pushbuf(lip);
+
+			if (!IOP_PUSHBUF(lip)) {
+				trace_xfs_ail_pushbuf_pinned(lip);
+				stuck++;
+				flush_log = 1;
+			} else {
+				last_pushed_lsn = lsn;
+			}
 			push_xfsbufd = 1;
 			break;
 
 		case XFS_ITEM_PINNED:
 			XFS_STATS_INC(xs_push_ail_pinned);
+			trace_xfs_ail_pinned(lip);
+
 			stuck++;
 			flush_log = 1;
 			break;
 
 		case XFS_ITEM_LOCKED:
 			XFS_STATS_INC(xs_push_ail_locked);
-			last_pushed_lsn = lsn;
+			trace_xfs_ail_locked(lip);
 			stuck++;
 			break;
 
@@ -378,6 +423,8 @@ xfsaild_push(
 	if (!count) {
 		/* We're past our target or empty, so idle */
 		last_pushed_lsn = 0;
+
+		tout = 50;
 	} else if (XFS_LSN_CMP(lsn, target) >= 0) {
 		/*
 		 * We reached the target so wait a bit longer for I/O to
@@ -397,14 +444,25 @@ xfsaild_push(
 		 * continuing from where we were.
 		 */
 		tout = 20;
-	} else {
-		/* more to do, but wait a short while before continuing */
-		tout = 10;
 	}
+
 	*last_lsn = last_pushed_lsn;
 	return tout;
 }
 
+
+/*
+ * Push out all items in the AIL immediately
+ */
+void
+xfs_ail_push_all(
+	struct xfs_ail  *ailp)
+{
+	xfs_lsn_t       threshold_lsn = xfs_ail_max_lsn(ailp);
+
+	if (threshold_lsn)
+		xfs_ail_push(ailp, threshold_lsn);
+}
 
 /*
  * This is to be called when an item is unlocked that may have

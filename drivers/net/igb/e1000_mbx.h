@@ -1,7 +1,7 @@
 /*******************************************************************************
 
   Intel(R) Gigabit Ethernet Linux driver
-  Copyright(c) 2007-2010 Intel Corporation.
+  Copyright(c) 2007-2011 Intel Corporation.
 
   This program is free software; you can redistribute it and/or modify it
   under the terms and conditions of the GNU General Public License,
@@ -28,7 +28,7 @@
 #ifndef _E1000_MBX_H_
 #define _E1000_MBX_H_
 
-#include "e1000_api.h"
+#include "e1000_hw.h"
 
 #define E1000_P2VMAILBOX_STS   0x00000001 /* Initiate message send to VF */
 #define E1000_P2VMAILBOX_ACK   0x00000002 /* Ack message recv'd from VF */
@@ -54,34 +54,24 @@
 #define E1000_VT_MSGTYPE_CTS      0x20000000  /* Indicates that VF is still
                                                  clear to send requests */
 #define E1000_VT_MSGINFO_SHIFT    16
-/* bits 23:16 are used for extra info for certain messages */
+/* bits 23:16 are used for exra info for certain messages */
 #define E1000_VT_MSGINFO_MASK     (0xFF << E1000_VT_MSGINFO_SHIFT)
 
 #define E1000_VF_RESET            0x01 /* VF requests reset */
 #define E1000_VF_SET_MAC_ADDR     0x02 /* VF requests to set MAC addr */
 #define E1000_VF_SET_MULTICAST    0x03 /* VF requests to set MC addr */
-#define E1000_VF_SET_MULTICAST_COUNT_MASK (0x1F << E1000_VT_MSGINFO_SHIFT)
-#define E1000_VF_SET_MULTICAST_OVERFLOW   (0x80 << E1000_VT_MSGINFO_SHIFT)
 #define E1000_VF_SET_VLAN         0x04 /* VF requests to set VLAN */
-#define E1000_VF_SET_VLAN_ADD             (0x01 << E1000_VT_MSGINFO_SHIFT)
 #define E1000_VF_SET_LPE          0x05 /* VF requests to set VMOLR.LPE */
 #define E1000_VF_SET_PROMISC      0x06 /*VF requests to clear VMOLR.ROPE/MPME*/
-#define E1000_VF_SET_PROMISC_UNICAST      (0x01 << E1000_VT_MSGINFO_SHIFT)
 #define E1000_VF_SET_PROMISC_MULTICAST    (0x02 << E1000_VT_MSGINFO_SHIFT)
 
 #define E1000_PF_CONTROL_MSG      0x0100 /* PF control message */
 
-#define E1000_VF_MBX_INIT_TIMEOUT 2000 /* number of retries on mailbox */
-#define E1000_VF_MBX_INIT_DELAY   500  /* microseconds between retries */
-
-s32 e1000_read_mbx(struct e1000_hw *, u32 *, u16, u16);
-s32 e1000_write_mbx(struct e1000_hw *, u32 *, u16, u16);
-s32 e1000_read_posted_mbx(struct e1000_hw *, u32 *, u16, u16);
-s32 e1000_write_posted_mbx(struct e1000_hw *, u32 *, u16, u16);
-s32 e1000_check_for_msg(struct e1000_hw *, u16);
-s32 e1000_check_for_ack(struct e1000_hw *, u16);
-s32 e1000_check_for_rst(struct e1000_hw *, u16);
-void e1000_init_mbx_ops_generic(struct e1000_hw *hw);
-s32 e1000_init_mbx_params_pf(struct e1000_hw *);
+s32 igb_read_mbx(struct e1000_hw *, u32 *, u16, u16);
+s32 igb_write_mbx(struct e1000_hw *, u32 *, u16, u16);
+s32 igb_check_for_msg(struct e1000_hw *, u16);
+s32 igb_check_for_ack(struct e1000_hw *, u16);
+s32 igb_check_for_rst(struct e1000_hw *, u16);
+s32 igb_init_mbx_params_pf(struct e1000_hw *);
 
 #endif /* _E1000_MBX_H_ */
