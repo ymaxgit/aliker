@@ -1,0 +1,6 @@
+config ACRIDAFS
+	tristate "Taobao Acridafs for Kuafu"
+	default m
+	---help---
+	  This is for Taobao Acridafs, which is needed by Toabao Kuafu. The option
+	  is recommended as M.
