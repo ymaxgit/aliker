@@ -133,6 +133,14 @@ out:
 	return;
 }
 
+static void release_orig_stub(struct ali_hotfix *h)
+{
+	if (h->orig_stub) {
+		vfree(h->orig_stub);
+		h->orig_stub = NULL;
+	}
+}
+
 static int add_hotfix(struct ali_hotfix *h)
 {
 	unsigned char e9_jmp[RELATIVEJUMP_SIZE];
@@ -168,6 +176,7 @@ static void del_hotfix(struct ali_hotfix *h)
 	my_text_poke_smp(h->addr, h->saved_inst, RELATIVEJUMP_SIZE);
 	mutex_unlock(my_text_mutex);
 	put_online_cpus();
+	release_orig_stub(h);
 }
 
 static int init_hotfix(void)
@@ -239,10 +248,6 @@ void ali_hotfix_unregister(struct ali_hotfix_desc *descp)
 	list_del(&descp->list);
 	mutex_unlock(&hotfix_lock);
 	del_hotfix(&descp->hotfix);
-	if (descp->hotfix.orig_stub) {
-		vfree(descp->hotfix.orig_stub);
-		descp->hotfix.orig_stub = NULL;
-	}
 }
 EXPORT_SYMBOL(ali_hotfix_unregister);
 
