@@ -40,5 +40,10 @@ config SAMPLE_KRETPROBES
 	default m
 	depends on SAMPLE_KPROBES && KRETPROBES
 
+config SAMPLE_HOTFIXES
+	tristate "Build hotfixes example -- loadable modules only"
+	default m
+	depends on HOTFIXES
+
 endif # SAMPLES
 
