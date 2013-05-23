@@ -1206,6 +1206,13 @@ config NODES_SHIFT
 	  Specify the maximum number of NUMA Nodes available on the target
 	  system.  Increases memory reserved to accommodate various tables.
 
+config HOTFIXES
+	tristate "Hotfix support"
+	depends on X86_64
+	---help---
+	  Provide an API for kernel module to patch kernel function at runtime.
+	  You can observe all running hotfixes by read /proc/hotfixes.
+
 config HAVE_ARCH_BOOTMEM
 	def_bool y
 	depends on X86_32 && NUMA
