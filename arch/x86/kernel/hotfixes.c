@@ -203,7 +203,6 @@ static int is_dup(struct ali_hotfix_desc *n)
 	struct ali_hotfix_desc *descp;
 	bool dup = false;
 
-	mutex_lock(&hotfix_lock);
 	list_for_each(pos, &hotfix_desc_head) {
 		descp = container_of(pos, struct ali_hotfix_desc, list);
 		if (n->hotfix.addr == descp->hotfix.addr) {
@@ -211,7 +210,6 @@ static int is_dup(struct ali_hotfix_desc *n)
 			break;
 		}
 	}
-	mutex_unlock(&hotfix_lock);
 	return dup;
 }
 
@@ -226,17 +224,20 @@ int ali_hotfix_register(struct ali_hotfix_desc *descp)
 	if (!descp->hotfix.addr)
 		return -EINVAL;
 
-	if (is_dup(descp))
-		return -EBUSY;
+	mutex_lock(&hotfix_lock);
+	if (is_dup(descp)) {
+		ret = -EBUSY;
+		goto unlock;
+	}
 
 	ret = add_hotfix(&descp->hotfix);
 	if (ret)
-		return ret;
+		goto unlock;
 	INIT_LIST_HEAD(&descp->list);
-	mutex_lock(&hotfix_lock);
 	list_add_tail(&descp->list, &hotfix_desc_head);
+unlock:
 	mutex_unlock(&hotfix_lock);
-	return 0;
+	return ret;
 }
 EXPORT_SYMBOL(ali_hotfix_register);
 
