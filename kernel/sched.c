@@ -1509,7 +1509,17 @@ void wake_up_idle_cpu(int cpu)
 
 static inline bool got_nohz_idle_kick(void)
 {
-	return idle_cpu(smp_processor_id()) && this_rq()->nohz_balance_kick;
+	if (!this_rq()->nohz_balance_kick)
+		return false;
+	if (idle_cpu(smp_processor_id()) && !need_resched())
+		return true;
+
+	/*
+	 * We can't run Idle Load Balance on this CPU for this time so we
+	 * cancel it and clear nohz_balance_kick
+	 */
+	this_rq()->nohz_balance_kick = 0;
+	return false;
 }
 
 #else /* CONFIG_NO_HZ */
@@ -2509,7 +2519,7 @@ void scheduler_ipi(void)
 	/*
 	 * Check if someone kicked us for doing the nohz idle load balance.
 	 */
-	if (unlikely(got_nohz_idle_kick() && !need_resched()))
+	if (unlikely(got_nohz_idle_kick()))
 		raise_softirq_irqoff(SCHED_SOFTIRQ);
 	irq_exit();
 }
