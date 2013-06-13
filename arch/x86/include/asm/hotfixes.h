@@ -20,7 +20,7 @@ struct ali_hotfix_desc {
     char *memo;
     struct module *module;
     struct ali_hotfix hotfix;
-} hotfix_desc_t;
+};
 
 struct ali_sym_addr {
 	char *name;
