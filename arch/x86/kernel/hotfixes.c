@@ -124,7 +124,7 @@ out:
 	{
 		int i;
 
-		pr_warn("hotfixes: failed to create orig "
+		pr_warning("hotfixes: failed to create orig "
 				"stub of %s(), binary are:", h->func);
 		for (i = 0; i < 16; i++)
 			printk(" %x", *(((unsigned char *)h->addr)+i));
