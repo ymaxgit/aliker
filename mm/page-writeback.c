@@ -905,7 +905,6 @@ int write_cache_pages(struct address_space *mapping,
 		nr_pages = pagevec_lookup_tag(&pvec, mapping, &index, tag,
 			      min(end - index, (pgoff_t)PAGEVEC_SIZE-1) + 1);
 		if (nr_pages == 0) {
-			mapping->host->dirtied_when = jiffies;
 			done_index = 0;
 			break;
 		}

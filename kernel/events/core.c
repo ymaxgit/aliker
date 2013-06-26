@@ -1193,7 +1193,7 @@ retry:
 /*
  * Cross CPU call to disable a performance event
  */
-int __perf_event_disable(void *info)
+static int __perf_event_disable(void *info)
 {
 	struct perf_event *event = info;
 	struct perf_event_context *ctx = event->ctx;
@@ -1230,7 +1230,6 @@ int __perf_event_disable(void *info)
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(__perf_event_disable);
 
 /*
  * Disable a event.
@@ -1640,7 +1639,7 @@ static void __perf_event_mark_enabled(struct perf_event *event,
 /*
  * Cross CPU call to enable a performance event
  */
-int __perf_event_enable(void *info)
+static int __perf_event_enable(void *info)
 {
 	struct perf_event *event = info;
 	struct perf_event_context *ctx = event->ctx;
@@ -1704,7 +1703,6 @@ unlock:
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(__perf_event_enable);
 
 /*
  * Enable a event.
@@ -7574,3 +7572,15 @@ struct cgroup_subsys perf_subsys = {
 	.attach		= perf_cgroup_attach,
 };
 #endif /* CONFIG_CGROUP_PERF */
+
+int local_perf_event_enable(void *info)
+{
+	return __perf_event_enable(info);
+}
+EXPORT_SYMBOL_GPL(local_perf_event_enable);
+
+int local_perf_event_disable(void *info)
+{
+	return __perf_event_disable(info);
+}
+EXPORT_SYMBOL_GPL(local_perf_event_disable);

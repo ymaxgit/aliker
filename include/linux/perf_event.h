@@ -1164,12 +1164,9 @@ extern void perf_output_copy(struct perf_output_handle *handle,
 			     const void *buf, unsigned int len);
 extern int perf_swevent_get_recursion_context(void);
 extern void perf_swevent_put_recursion_context(int rctx);
-extern int __perf_event_enable(void *info);
-extern int __perf_event_disable(void *info);
 extern void perf_event_enable(struct perf_event *event);
 extern void perf_event_disable(struct perf_event *event);
 extern void perf_event_task_tick(void);
-extern void perf_event_set(struct perf_event *event, u64 val);
 #else
 static inline void
 perf_event_task_sched_in(struct task_struct *task)			{ }
@@ -1224,6 +1221,14 @@ do {									\
 		(void *)(unsigned long)smp_processor_id());		\
 	register_cpu_notifier(&fn##_nb);				\
 } while (0)
+
+#ifdef CONFIG_PERF_EVENTS
+extern void perf_event_set(struct perf_event *event, u64 val);
+extern int local_perf_event_enable(void *info);
+extern int local_perf_event_disable(void *info);
+#endif
+
+#define KGTP_API_VERSION	20120917
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_PERF_EVENT_H */
