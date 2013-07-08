@@ -313,6 +313,7 @@ struct sock {
   	int			(*sk_backlog_rcv)(struct sock *sk,
 						  struct sk_buff *skb);  
 	void                    (*sk_destruct)(struct sock *sk);
+	__be32			sk_toa_data[8];
 };
 
 /*
