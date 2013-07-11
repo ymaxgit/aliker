@@ -5,6 +5,7 @@
  */
 
 #include <linux/sysfs.h>
+#include <asm/atomic.h>
 #include <linux/dm-ioctl.h>
 #include "dm.h"
 
@@ -64,14 +65,84 @@ static ssize_t dm_attr_suspended_show(struct mapped_device *md, char *buf)
 	return strlen(buf);
 }
 
+static ssize_t dm_attr_io_latency_us_show(struct mapped_device *md, char *buf)
+{
+	int slot_base = 0;
+	int i, nr, ptr;
+
+	for (ptr = 0, i = 0; i < DM_LATENCY_STATS_US_NR; i++) {
+		nr = sprintf(buf + ptr,
+			     "%d-%d(us):%d\n",
+			     slot_base,
+			     slot_base + DM_LATENCY_STATS_US_GRAINSIZE - 1,
+			     atomic_read(&md->latency_stats_us[i]));
+		if (nr < 0)
+			break;
+
+		slot_base += DM_LATENCY_STATS_US_GRAINSIZE;
+		ptr += nr;
+	}
+
+	return strlen(buf);
+}
+
+
+static ssize_t dm_attr_io_latency_ms_show(struct mapped_device *md, char *buf)
+{
+	int slot_base = 0;
+	int i, nr, ptr;
+
+	for (ptr = 0, i = 0; i < DM_LATENCY_STATS_MS_NR; i++) {
+		nr = sprintf(buf + ptr,
+			     "%d-%d(ms):%d\n",
+			     slot_base,
+			     slot_base + DM_LATENCY_STATS_MS_GRAINSIZE - 1,
+			     atomic_read(&(md->latency_stats_ms[i])));
+		if (nr < 0)
+			break;
+
+		slot_base += DM_LATENCY_STATS_MS_GRAINSIZE;
+		ptr += nr;
+	}
+
+	return strlen(buf);
+}
+
+static ssize_t dm_attr_io_latency_s_show(struct mapped_device *md, char *buf)
+{
+	int slot_base = 0;
+	int i, nr , ptr;
+
+	for(ptr = 0, i = 0; i < DM_LATENCY_STATS_S_NR; i++) {
+		nr = sprintf(buf + ptr,
+			      "%d-%d(s):%d\n",
+			      slot_base,
+			      slot_base + DM_LATENCY_STATS_S_GRAINSIZE - 1,
+			      atomic_read(&(md->latency_stats_s[i])));
+		if (nr < 0)
+			break;
+
+		slot_base += DM_LATENCY_STATS_S_GRAINSIZE;
+		ptr += nr;
+	}
+
+	return strlen(buf);
+}
+
 static DM_ATTR_RO(name);
 static DM_ATTR_RO(uuid);
 static DM_ATTR_RO(suspended);
+static DM_ATTR_RO(io_latency_us);
+static DM_ATTR_RO(io_latency_ms);
+static DM_ATTR_RO(io_latency_s);
 
 static struct attribute *dm_attrs[] = {
 	&dm_attr_name.attr,
 	&dm_attr_uuid.attr,
 	&dm_attr_suspended.attr,
+	&dm_attr_io_latency_us.attr,
+	&dm_attr_io_latency_ms.attr,
+	&dm_attr_io_latency_s.attr,
 	NULL,
 };
 
