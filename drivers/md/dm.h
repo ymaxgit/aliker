@@ -29,6 +29,14 @@
 #define DM_TYPE_BIO_BASED	1
 #define DM_TYPE_REQUEST_BASED	2
 
+/* 300s is max disk I/O latency which application may accept */
+#define DM_LATENCY_STATS_S_NR		100
+#define DM_LATENCY_STATS_S_GRAINSIZE	(1000/DM_LATENCY_STATS_S_NR)
+#define DM_LATENCY_STATS_MS_NR		100
+#define DM_LATENCY_STATS_MS_GRAINSIZE	(1000/DM_LATENCY_STATS_MS_NR)
+#define DM_LATENCY_STATS_US_NR		100
+#define DM_LATENCY_STATS_US_GRAINSIZE	(1000/DM_LATENCY_STATS_US_NR)
+
 /*
  * Work processed by per-device workqueue.
  */
@@ -107,6 +115,11 @@ struct mapped_device {
 
 	/* zero-length flush that will be cloned and submitted to targets */
 	struct bio flush_bio;
+
+	/* latency statistic buckets */
+	atomic_t latency_stats_s[DM_LATENCY_STATS_S_NR];
+	atomic_t latency_stats_ms[DM_LATENCY_STATS_MS_NR];
+	atomic_t latency_stats_us[DM_LATENCY_STATS_US_NR];
 };
 
 /*

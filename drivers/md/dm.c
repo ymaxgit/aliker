@@ -20,6 +20,7 @@
 #include <linux/idr.h>
 #include <linux/hdreg.h>
 #include <linux/delay.h>
+#include <linux/clocksource.h>
 
 #include <trace/events/block.h>
 
@@ -49,6 +50,7 @@ struct dm_io {
 	struct bio *bio;
 	unsigned long start_time;
 	spinlock_t endio_lock;
+	unsigned long start_time_usec;
 };
 
 /*
@@ -384,13 +386,70 @@ static int md_in_flight(struct mapped_device *md)
 	       atomic_read(&md->pending[WRITE]);
 }
 
+static unsigned long long us2msecs(unsigned long long usec)
+{
+	usec += 500;
+	do_div(usec, 1000);
+	return usec;
+}
+
+static unsigned long long us2secs(unsigned long long usec)
+{
+	usec += 500;
+	do_div(usec, 1000);
+	usec += 500;
+	do_div(usec, 1000);
+	return usec;
+}
+
+static void update_latency_stats(struct mapped_device *md, struct dm_io *io)
+{
+	uint64_t now, latency;
+	int idx;
+	ktime_t ts;
+
+	ts = ktime_get();
+	now = (uint64_t)ktime_to_us(ts);
+
+	/*
+	 * if now <= io->start_time_usec, it means counter
+	 * in ktime_get() over flows, just ignore this I/O
+	 */
+	if (unlikely(now < io->start_time_usec))
+		return;
+
+	latency = (uint64_t)(now - io->start_time_usec);
+	if (latency < 1000) {
+		/* microseconds */
+		idx = latency/DM_LATENCY_STATS_US_GRAINSIZE;
+		if (idx > (DM_LATENCY_STATS_US_NR - 1))
+			idx = DM_LATENCY_STATS_US_NR - 1;
+		atomic_inc(&(md->latency_stats_us[idx]));
+	} else if (latency < 1000000) {
+		/* milliseconds */
+		idx = us2msecs(latency)/DM_LATENCY_STATS_MS_GRAINSIZE;
+		if (idx > (DM_LATENCY_STATS_MS_NR - 1))
+			idx = DM_LATENCY_STATS_MS_NR - 1;
+		atomic_inc(&(md->latency_stats_ms[idx]));
+	} else {
+		/* seconds */
+		idx = us2secs(latency)/DM_LATENCY_STATS_S_GRAINSIZE;
+		if (idx > (DM_LATENCY_STATS_S_NR - 1))
+			idx = DM_LATENCY_STATS_S_NR - 1;
+		atomic_inc(&(md->latency_stats_s[idx]));
+	}
+}
+
 static void start_io_acct(struct dm_io *io)
 {
 	struct mapped_device *md = io->md;
+	ktime_t ts;
 	int cpu;
 	int rw = bio_data_dir(io->bio);
 
 	io->start_time = jiffies;
+	ts = ktime_get();
+	io->start_time_usec = (unsigned long)ktime_to_us(ts);
 
 	cpu = part_stat_lock();
 	part_round_stats(cpu, &dm_disk(md)->part0);
@@ -410,6 +469,8 @@ static void end_io_acct(struct dm_io *io)
 	part_round_stats(cpu, &dm_disk(md)->part0);
 	part_stat_add(cpu, &dm_disk(md)->part0, ticks[rw], duration);
 	part_stat_unlock();
+
+	update_latency_stats(md, io);
 
 	/*
 	 * After this is decremented the bio must not be touched if it is
@@ -1814,6 +1875,14 @@ static struct mapped_device *alloc_dev(int minor)
 	bio_init(&md->flush_bio);
 	md->flush_bio.bi_bdev = md->bdev;
 	md->flush_bio.bi_rw = WRITE_FLUSH;
+
+	/* initial latency stats buckets */
+	for (r = 0; r < DM_LATENCY_STATS_S_NR; r++)
+		atomic_set(&(md->latency_stats_s[r]), 0);
+	for (r = 0; r < DM_LATENCY_STATS_MS_NR; r++)
+		atomic_set(&(md->latency_stats_ms[r]), 0);
+	for (r = 0; r < DM_LATENCY_STATS_US_NR; r++)
+		atomic_set(&(md->latency_stats_us[r]), 0);
 
 	/* Populate the mapping, nobody knows we exist yet */
 	spin_lock(&_minor_lock);
