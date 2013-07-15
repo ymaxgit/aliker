@@ -20,6 +20,7 @@
 #include <linux/idr.h>
 #include <linux/hdreg.h>
 #include <linux/delay.h>
+#include <linux/clocksource.h>
 
 #include <trace/events/block.h>
 
@@ -49,6 +50,7 @@ struct dm_io {
 	struct bio *bio;
 	unsigned long start_time;
 	spinlock_t endio_lock;
+	unsigned long start_time_usec;
 };
 
 /*
@@ -110,86 +112,6 @@ EXPORT_SYMBOL_GPL(dm_get_rq_mapinfo);
 #define DMF_DELETING 4
 #define DMF_NOFLUSH_SUSPENDING 5
 #define DMF_MERGE_IS_OPTIONAL 6
-
-/*
- * Work processed by per-device workqueue.
- */
-struct mapped_device {
-	uint64_t features;	/* 3rd party driver must initialize to zero */
-	struct rw_semaphore io_lock;
-	struct mutex suspend_lock;
-	rwlock_t map_lock;
-	atomic_t holders;
-	atomic_t open_count;
-
-	unsigned long flags;
-
-	struct request_queue *queue;
-	unsigned type;
-	/* Protect queue and type against concurrent access. */
-	struct mutex type_lock;
-
-	struct target_type *immutable_target_type;
-
-	struct gendisk *disk;
-	char name[16];
-
-	void *interface_ptr;
-
-	/*
-	 * A list of ios that arrived while we were suspended.
-	 */
-	atomic_t pending[2];
-	wait_queue_head_t wait;
-	struct work_struct work;
-	struct bio_list deferred;
-	spinlock_t deferred_lock;
-
-	/*
-	 * Processing queue (flush)
-	 */
-	struct workqueue_struct *wq;
-
-	/*
-	 * The current mapping.
-	 */
-	struct dm_table *map;
-
-	/*
-	 * io objects are allocated from here.
-	 */
-	mempool_t *io_pool;
-	mempool_t *tio_pool;
-
-	struct bio_set *bs;
-
-	/*
-	 * Event handling.
-	 */
-	atomic_t event_nr;
-	wait_queue_head_t eventq;
-	atomic_t uevent_seq;
-	struct list_head uevent_list;
-	spinlock_t uevent_lock; /* Protect access to uevent_list */
-
-	/*
-	 * freeze/thaw support require holding onto a super block
-	 */
-	struct super_block *frozen_sb;
-	struct block_device *bdev;
-
-	/* forced geometry settings */
-	struct hd_geometry geometry;
-
-	/* For saving the address of __make_request for request based dm */
-	make_request_fn *saved_make_request_fn;
-
-	/* sysfs handle */
-	struct kobject kobj;
-
-	/* zero-length flush that will be cloned and submitted to targets */
-	struct bio flush_bio;
-};
 
 /*
  * For mempools pre-allocation at the table loading time.
@@ -464,13 +386,70 @@ static int md_in_flight(struct mapped_device *md)
 	       atomic_read(&md->pending[WRITE]);
 }
 
+static unsigned long long us2msecs(unsigned long long usec)
+{
+	usec += 500;
+	do_div(usec, 1000);
+	return usec;
+}
+
+static unsigned long long us2secs(unsigned long long usec)
+{
+	usec += 500;
+	do_div(usec, 1000);
+	usec += 500;
+	do_div(usec, 1000);
+	return usec;
+}
+
+static void update_latency_stats(struct mapped_device *md, struct dm_io *io)
+{
+	uint64_t now, latency;
+	int idx;
+	ktime_t ts;
+
+	ts = ktime_get();
+	now = (uint64_t)ktime_to_us(ts);
+
+	/*
+	 * if now <= io->start_time_usec, it means counter
+	 * in ktime_get() over flows, just ignore this I/O
+	 */
+	if (unlikely(now < io->start_time_usec))
+		return;
+
+	latency = (uint64_t)(now - io->start_time_usec);
+	if (latency < 1000) {
+		/* microseconds */
+		idx = latency/DM_LATENCY_STATS_US_GRAINSIZE;
+		if (idx > (DM_LATENCY_STATS_US_NR - 1))
+			idx = DM_LATENCY_STATS_US_NR - 1;
+		atomic_inc(&(md->latency_stats_us[idx]));
+	} else if (latency < 1000000) {
+		/* milliseconds */
+		idx = us2msecs(latency)/DM_LATENCY_STATS_MS_GRAINSIZE;
+		if (idx > (DM_LATENCY_STATS_MS_NR - 1))
+			idx = DM_LATENCY_STATS_MS_NR - 1;
+		atomic_inc(&(md->latency_stats_ms[idx]));
+	} else {
+		/* seconds */
+		idx = us2secs(latency)/DM_LATENCY_STATS_S_GRAINSIZE;
+		if (idx > (DM_LATENCY_STATS_S_NR - 1))
+			idx = DM_LATENCY_STATS_S_NR - 1;
+		atomic_inc(&(md->latency_stats_s[idx]));
+	}
+}
+
 static void start_io_acct(struct dm_io *io)
 {
 	struct mapped_device *md = io->md;
+	ktime_t ts;
 	int cpu;
 	int rw = bio_data_dir(io->bio);
 
 	io->start_time = jiffies;
+	ts = ktime_get();
+	io->start_time_usec = (unsigned long)ktime_to_us(ts);
 
 	cpu = part_stat_lock();
 	part_round_stats(cpu, &dm_disk(md)->part0);
@@ -490,6 +469,8 @@ static void end_io_acct(struct dm_io *io)
 	part_round_stats(cpu, &dm_disk(md)->part0);
 	part_stat_add(cpu, &dm_disk(md)->part0, ticks[rw], duration);
 	part_stat_unlock();
+
+	update_latency_stats(md, io);
 
 	/*
 	 * After this is decremented the bio must not be touched if it is
@@ -1894,6 +1875,14 @@ static struct mapped_device *alloc_dev(int minor)
 	bio_init(&md->flush_bio);
 	md->flush_bio.bi_bdev = md->bdev;
 	md->flush_bio.bi_rw = WRITE_FLUSH;
+
+	/* initial latency stats buckets */
+	for (r = 0; r < DM_LATENCY_STATS_S_NR; r++)
+		atomic_set(&(md->latency_stats_s[r]), 0);
+	for (r = 0; r < DM_LATENCY_STATS_MS_NR; r++)
+		atomic_set(&(md->latency_stats_ms[r]), 0);
+	for (r = 0; r < DM_LATENCY_STATS_US_NR; r++)
+		atomic_set(&(md->latency_stats_us[r]), 0);
 
 	/* Populate the mapping, nobody knows we exist yet */
 	spin_lock(&_minor_lock);
