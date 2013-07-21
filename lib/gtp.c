@@ -20,7 +20,7 @@
  */
 
 /* If "* 10" means that this is not a release version.  */
-#define GTP_VERSION			(20130508)
+#define GTP_VERSION			(20130706)
 
 #include <linux/version.h>
 #ifndef RHEL_RELEASE_VERSION
@@ -73,6 +73,10 @@
 #endif
 #endif
 
+#ifdef CONFIG_LOCKDEP
+#warning Current kernel open the runtime locking correctness validator (CONFIG_LOCKDEP) that will make KGTP trace functions about locks get deadlock.  Please DO NOT trace function about locks.
+#endif
+
 #ifdef GTP_FTRACE_RING_BUFFER
 #ifndef CONFIG_RING_BUFFER
 #define CONFIG_RING_BUFFER
@@ -111,6 +115,7 @@
 #include <linux/hw_breakpoint.h>
 #endif
 #include "gtp.h"
+
 #ifdef GTP_FTRACE_RING_BUFFER
 #ifndef GTP_SELF_RING_BUFFER
 #include <linux/ring_buffer.h>
@@ -126,6 +131,13 @@
 #endif
 #else
 #warning "Current Kernel doesn't open CONFIG_PERF_EVENTS.  Function of performance counters is not available."
+#endif
+
+/* Handle KGTP_API_VERSION for the special kernel that include KGTP_API.  */
+#ifdef KGTP_API_VERSION
+#define KGTP_API_VERSION_LOCAL	KGTP_API_VERSION
+#else
+#define KGTP_API_VERSION_LOCAL	0
 #endif
 
 #ifndef __percpu
@@ -158,23 +170,20 @@
 #endif
 /* ---------------------------------------------------------------- */
 
-#ifdef KGTP_API_VERSION
-#define KGTP_API_VERSION_LOCAL	KGTP_API_VERSION
-#else
-#define KGTP_API_VERSION_LOCAL	0
-#endif
-
+/* Following part is to support old Linux kernel ------------------ */
 #ifndef DEFINE_SEMAPHORE
 #define DEFINE_SEMAPHORE(name)	DECLARE_MUTEX(name)
-#endif
-
-#ifdef GTPDEBUG
-#define GTP_DEBUG		KERN_WARNING
 #endif
 
 #ifndef list_first_entry
 #define list_first_entry(ptr, type, member) \
 	list_entry((ptr)->next, type, member)
+#endif
+
+/* ---------------------------------------------------------------- */
+
+#ifdef GTPDEBUG
+#define GTP_DEBUG		KERN_WARNING
 #endif
 
 /* #define GTP_DEBUG_V */
@@ -269,8 +278,8 @@ struct action_m {
 };
 
 struct action {
-	struct action	*next;
-	unsigned char	type;
+	struct list_head	node;
+	unsigned char		type;
 	union {
 		ULONGEST		reg_mask;
 		struct action_agent_exp	exp;
@@ -340,10 +349,13 @@ struct gtp_entry {
 	ULONGEST		num;
 	ULONGEST		addr;
 
+	/* The actions that set $current help tracepoint get right regs.  */
+	struct action		*get_regs;
+	/* The actions for the condition.  */
 	struct action		*cond;
-	struct action		*action_list;
+	struct list_head	action_list;
 	int			step;
-	struct action		*step_action_list;
+	struct list_head	step_action_list;
 
 	atomic_t		current_pass;
 	struct gtpsrc		*printk_str;
@@ -507,6 +519,10 @@ struct gtp_hwb_s {
 	CORE_ADDR		addr;
 	int			size;
 	int			type;
+
+	/* The previous of the address that this watch tracepoint
+	   watch on.  */
+	int64_t			prev_val;
 
 	/* This is the num and address that setup this hardware
 	   breakpoints.
@@ -793,13 +809,14 @@ enum {
 	GTP_WATCH_TRACE_ADDR_ID			= 40,
 	GTP_WATCH_ADDR_ID			= 41,
 	GTP_WATCH_VAL_ID			= 42,
+	GTP_WATCH_PREV_VAL_ID			= 46,
 	GTP_WATCH_COUNT_ID			= 43,
 
 	GTP_STEP_COUNT_ID			= 44,
 	GTP_STEP_ID_ID				= 45,
 
 	GTP_VAR_SPECIAL_MIN			= GTP_VAR_VERSION_ID,
-	GTP_VAR_SPECIAL_MAX			= GTP_STEP_ID_ID,
+	GTP_VAR_SPECIAL_MAX			= GTP_WATCH_PREV_VAL_ID,
 };
 
 enum pe_tv_id {
@@ -1177,6 +1194,24 @@ gtp_current_task_user_hooks_get_val(struct gtp_trace_s *unused1,
 
 static struct gtp_var_hooks	gtp_current_task_user_hooks = {
 	.agent_get_val = gtp_current_task_user_hooks_get_val,
+};
+
+static int
+gtp_current_hooks_set_val(struct gtp_trace_s *gts, struct gtp_var *gtv,
+			  int64_t val)
+{
+	if (gts->tmp_regs == NULL)
+		gts->tmp_regs = (struct pt_regs *)(unsigned long)val;
+	else {
+		printk(KERN_WARNING "KGTP: $current cannot be set twice.");
+		return -1;
+	}
+
+	return 0;
+}
+
+static struct gtp_var_hooks	gtp_current_hooks = {
+	.agent_set_val = gtp_current_hooks_set_val,
 };
 
 static int
@@ -1751,10 +1786,57 @@ static struct gtp_var_hooks	gtp_watch_get_hooks = {
 	.agent_get_val = gtp_watch_get_val,
 };
 
+static int	gtp_get_addr_val(CORE_ADDR addr, int size, int64_t *val);
+
 static int
 gtp_watch_val_get_val(struct gtp_trace_s *gts, struct gtp_var *gtv,
 		      int64_t *val)
 {
+	int	ret;
+
+	if (gts->tpe->type == gtp_entry_kprobe)
+		return -EINVAL;
+
+	if (gts->hwb_current_val_gotten) {
+		*val = gts->hwb_current_val;
+		return 0;
+	}
+
+	ret = gtp_get_addr_val(gts->hwb->addr, gts->hwb->size, val);
+	if (ret == 0) {
+		gts->hwb_current_val = *val;
+		gts->hwb_current_val_gotten = 1;
+	}
+
+	return ret;
+}
+
+static struct gtp_var_hooks	gtp_watch_val_hooks = {
+	.agent_get_val = gtp_watch_val_get_val,
+};
+
+static int
+gtp_watch_prev_val_get_val(struct gtp_trace_s *gts, struct gtp_var *gtv,
+			   int64_t *val)
+{
+	if (gts->tpe->type == gtp_entry_kprobe)
+		return -EINVAL;
+
+	*val = gts->hwb->prev_val;
+	return 0;
+}
+
+static struct gtp_var_hooks	gtp_watch_prev_val_hooks = {
+	.agent_get_val = gtp_watch_prev_val_get_val,
+};
+#endif
+
+#ifdef CONFIG_X86
+static int
+gtp_get_addr_val(CORE_ADDR addr, int size, int64_t *val)
+{
+	int	ret = -EINVAL;
+
 	union {
 		union {
 			uint8_t	bytes[1];
@@ -1774,38 +1856,43 @@ gtp_watch_val_get_val(struct gtp_trace_s *gts, struct gtp_var *gtv,
 		} u64;
 	} cnv;
 
-	if (gts->tpe->type == gtp_entry_kprobe)
-		return -1;
-
-	switch (gts->hwb->size) {
+	switch (size) {
 	case 1:
-		if (probe_kernel_read(cnv.u8.bytes, (void *)gts->hwb->addr, 1))
-			return -1;
+		ret = probe_kernel_read(cnv.u8.bytes, (void *)addr, 1);
+		if (ret)
+			goto error;
 		*val = (int64_t) cnv.u8.val;
 		break;
 	case 2:
-		if (probe_kernel_read(cnv.u16.bytes, (void *)gts->hwb->addr, 2))
-			return -1;
+		ret = probe_kernel_read(cnv.u16.bytes, (void *)addr, 2);
+		if (ret)
+			goto error;
 		*val = (int64_t) cnv.u16.val;
 		break;
 	case 4:
-		if (probe_kernel_read(cnv.u32.bytes, (void *)gts->hwb->addr, 4))
-			return -1;
+		ret = probe_kernel_read(cnv.u32.bytes, (void *)addr, 4);
+		if (ret)
+			goto error;
 		*val = (int64_t) cnv.u32.val;
 		break;
 	case 8:
-		if (probe_kernel_read(cnv.u64.bytes, (void *)gts->hwb->addr, 8))
-			return -1;
+		ret = probe_kernel_read(cnv.u64.bytes, (void *)addr, 8);
+		if (ret)
+			goto error;
 		*val = (int64_t) cnv.u64.val;
+		break;
+	default:
+		goto error;
 		break;
 	}
 
 	return 0;
-}
 
-static struct gtp_var_hooks	gtp_watch_val_hooks = {
-	.agent_get_val = gtp_watch_val_get_val,
-};
+error:
+	printk(KERN_WARNING "KGTP: fail get value from address %p size %d.\n",
+	       (void *)addr, size);
+	return ret;
+}
 #endif
 
 #ifdef GTP_RB
@@ -1884,7 +1971,8 @@ gtp_var_special_add_all(void)
 	if (IS_ERR(var))
 		return PTR_ERR(var);
 
-	var = gtp_var_special_add(GTP_VAR_CURRENT_ID, 0, 0, "current", NULL);
+	var = gtp_var_special_add(GTP_VAR_CURRENT_ID, 0, 0, "current",
+				  &gtp_current_hooks);
 	if (IS_ERR(var))
 		return PTR_ERR(var);
 
@@ -2058,6 +2146,10 @@ gtp_var_special_add_all(void)
 		return PTR_ERR(var);
 	var = gtp_var_special_add(GTP_WATCH_VAL_ID, 0, 0,
 				  "watch_val", &gtp_watch_val_hooks);
+	if (IS_ERR(var))
+		return PTR_ERR(var);
+	var = gtp_var_special_add(GTP_WATCH_PREV_VAL_ID, 0, 0,
+				  "watch_prev_val", &gtp_watch_prev_val_hooks);
 	if (IS_ERR(var))
 		return PTR_ERR(var);
 	var = gtp_var_special_add(GTP_WATCH_COUNT_ID, 0, 0,
@@ -3373,7 +3465,9 @@ gtp_get_user_page(struct mm_struct *mm, unsigned long start,
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,39))
 static struct task_struct	gtp_fake_task;
+#ifdef CONFIG_IA32_EMULATION
 static struct thread_info	gtp_fake_thread;
+#endif
 #endif
 
 /* Example: access_remote_vm */
@@ -4849,6 +4943,7 @@ gtp_step_stop(struct pt_regs *regs)
 static void
 gtp_handler(struct gtp_trace_s *gts)
 {
+	struct list_head	*head, *cur;
 	struct action		*ae;
 
 #ifdef GTP_DEBUG_V
@@ -4862,7 +4957,15 @@ gtp_handler(struct gtp_trace_s *gts)
 
 	gts->read_memory = (void *)probe_kernel_read;
 	if (gts->tpe->flags & GTP_ENTRY_FLAGS_CURRENT_TASK) {
-		gts->regs = task_pt_regs(get_current());
+		/* Get regs.  */
+		if (gts->tpe->get_regs) {
+			if (gtp_action_x(gts, gts->tpe->get_regs)
+			    || gts->tmp_regs == NULL)
+				goto tpe_stop;
+			gts->regs = gts->tmp_regs;
+		} else
+			gts->regs = task_pt_regs(get_current());
+
 		if (user_mode(gts->regs))
 			gts->read_memory = gtp_task_handler_read;
 	}
@@ -4906,11 +5009,10 @@ gtp_handler(struct gtp_trace_s *gts)
 	}
 
 	/* Handle actions.  */
-	if (gts->step)
-		ae = gts->tpe->step_action_list;
-	else
-		ae = gts->tpe->action_list;
-	for (; ae; ae = ae->next) {
+	head = gts->step ? &gts->tpe->step_action_list :
+			   &gts->tpe->action_list;
+	list_for_each(cur, head) {
+		ae = list_entry(cur, struct action, node);
 		switch (ae->type) {
 		case 'R':
 			if (gtp_action_r(gts, ae))
@@ -5206,19 +5308,23 @@ gtp_action_alloc(char type)
 static void
 gtp_action_release(struct action *ae)
 {
-	struct action	*ae2;
+	if (ae == NULL)
+		return;
+	if ((ae->type == 'X' || ae->type == 0xff) && ae->u.exp.buf)
+		kfree(ae->u.exp.buf);
+	kfree(ae);
+}
 
-	while (ae) {
-		ae2 = ae;
-		ae = ae->next;
-		/* Release ae2.  */
-		switch (ae2->type) {
-		case 'X':
-		case 0xff:
-			kfree(ae2->u.exp.buf);
-			break;
-		}
-		kfree(ae2);
+static void
+gtp_action_list_release(struct list_head *list)
+{
+	struct list_head	*cur, *tmp;
+	struct action		*ae;
+
+	list_for_each_safe(cur, tmp, list) {
+		ae = list_entry(cur, struct action, node);
+		list_del(&ae->node);
+		gtp_action_release(ae);
 	}
 }
 
@@ -5330,6 +5436,8 @@ gtp_list_add(ULONGEST num, ULONGEST addr)
 	INIT_WORK(&ret->enable_work, gtp_tracepoint_enable);
 	INIT_WORK(&ret->disable_work, gtp_tracepoint_disable);
 #endif
+	INIT_LIST_HEAD(&ret->action_list);
+	INIT_LIST_HEAD(&ret->step_action_list);
 
 	/* Add to gtp_list.  */
 	ret->next = gtp_list;
@@ -5380,8 +5488,8 @@ gtp_list_release(void)
 		tpe = gtp_list;
 		gtp_list = gtp_list->next;
 		gtp_action_release(tpe->cond);
-		gtp_action_release(tpe->action_list);
-		gtp_action_release(tpe->step_action_list);
+		gtp_action_list_release(&tpe->action_list);
+		gtp_action_list_release(&tpe->step_action_list);
 		gtp_src_release(tpe->src);
 		gtp_src_release(tpe->action_cmd);
 		gtp_src_release(tpe->printk_str);
@@ -5624,6 +5732,28 @@ gtp_src_add(char *begin, char *end, struct gtpsrc **src_list)
 }
 
 #ifdef CONFIG_X86
+static void
+gtp_hw_breakpoint_handler_1 (struct gtp_hwb_s *hwb, struct pt_regs *regs)
+{
+	struct gtp_trace_s	gts;
+
+	preempt_disable();
+
+	memset(&gts, 0, sizeof(struct gtp_trace_s));
+	gts.tpe = hwb->watch;
+	gts.regs = regs;
+	gts.hwb = hwb;
+	gtp_handler(&gts);
+
+	preempt_enable_no_resched();
+
+	/* Update hwb->prev_val.  */
+	if (gts.hwb_current_val_gotten)
+		hwb->prev_val = gts.hwb_current_val;
+	else
+		gtp_get_addr_val(hwb->addr, hwb->size, &(hwb->prev_val));
+}
+
 #define ADDR_PREFIX_OPCODE 0x67
 #define DATA_PREFIX_OPCODE 0x66
 #define LOCK_PREFIX_OPCODE 0xf0
@@ -5802,17 +5932,7 @@ gtp_notifier_call(struct notifier_block *self, unsigned long cmd,
 			if (addr != gtp_hwb[i].addr)
 				continue;
 		}
-		preempt_disable();
-		{
-			struct gtp_trace_s	gts;
-
-			memset(&gts, 0, sizeof(struct gtp_trace_s));
-			gts.tpe = gtp_hwb[i].watch;
-			gts.regs = args->regs;
-			gts.hwb = &gtp_hwb[i];
-			gtp_handler(&gts);
-		}
-		preempt_enable_no_resched();
+		gtp_hw_breakpoint_handler_1(&gtp_hwb[i], args->regs);
 	}
 
 	/* If the HWB need update in this CPU, just update it.  */
@@ -5862,30 +5982,24 @@ gtp_hw_breakpoint_handler(int num, struct pt_regs *regs)
 {
 	read_lock(&gtp_hwb_lock);
 
+	/* Handle the warning of new gcc.  */
+	if (num < 0 || num >= HWB_NUM)
+		goto out;
+
 	if (gtp_hwb[num].watch == NULL)
-		return;
+		goto out;
 	if (__get_cpu_var(gtp_hwb_sync_count_local) != gtp_hwb_sync_count) {
 		unsigned long	addr;
 
 		gtp_get_debugreg(addr, num);
 		if (addr != gtp_hwb[num].addr) {
 			gtp_set_debugreg(gtp_hwb[num].addr, num);
-			return;
+			goto out;
 		}
 	}
 
-	preempt_disable();
-	{
-		struct gtp_trace_s	gts;
-
-		memset(&gts, 0, sizeof(struct gtp_trace_s));
-		gts.tpe = gtp_hwb[num].watch;
-		gts.regs = regs;
-		gts.hwb = &gtp_hwb[num];
-		gtp_handler(&gts);
-	}
-	preempt_enable_no_resched();
-
+	gtp_hw_breakpoint_handler_1(&gtp_hwb[num], regs);
+out:
 	read_unlock(&gtp_hwb_lock);
 }
 
@@ -6007,6 +6121,12 @@ gtp_register_hwb(const struct gtp_hwb_s *arg, int nowait)
 	write_lock_irqsave(&gtp_hwb_lock, flags);
 	if (!list_empty(&gtp_hwb_unused_list)) {
 		int	num;
+		int64_t	prev_val;
+
+		/* Get the value from address that will watch as prev value.  */
+		ret = gtp_get_addr_val(arg->addr, arg->size, &prev_val);
+		if (ret)
+			goto out;
 
 		hwb = list_first_entry(&gtp_hwb_unused_list, struct gtp_hwb_s, node);
 		list_del_init(&hwb->node);
@@ -6015,6 +6135,7 @@ gtp_register_hwb(const struct gtp_hwb_s *arg, int nowait)
 		memcpy((void *)&arg->node, (void *)&hwb->node, sizeof (hwb->node));
 		memcpy(hwb, arg, sizeof(struct gtp_hwb_s));
 		hwb->num = num;
+		hwb->prev_val = prev_val;
 
 		/* Update gtp_hwb_dr7 and gtp_hwb_drx[num].  */
 		/* Set Gx.  */
@@ -6048,6 +6169,7 @@ gtp_register_hwb(const struct gtp_hwb_s *arg, int nowait)
 
 		ret = 0;
 	}
+out:
 	write_unlock_irqrestore(&gtp_hwb_lock, flags);
 
 	if (ret == 0 && !nowait)
@@ -6409,11 +6531,14 @@ gtp_x_var_add(struct gtp_x_var **list, unsigned int num, unsigned int flag)
 static int
 gtp_add_backtrace_actions(struct gtp_entry *tpe, int step)
 {
-	struct action	*ae, *new_ae;
-	int		got_r = 0, got_m = 0;
+	struct list_head	*head, *cur;
+	struct action		*ae;
+	int			got_r = 0, got_m = 0;
 
-	for (ae = step ? tpe->step_action_list : tpe->action_list;
-	     ae; ae = ae->next) {
+	head = step ? &tpe->step_action_list : &tpe->action_list;
+
+	list_for_each(cur, head) {
+		ae = list_entry(cur, struct action, node);
 		if (ae->type == 'R')
 			got_r = 1;
 		else if (ae->type == 'M' && ae->u.m.regnum == GTP_SP_NUM
@@ -6422,43 +6547,22 @@ gtp_add_backtrace_actions(struct gtp_entry *tpe, int step)
 
 		if (got_r && got_m)
 			return 1;
-
-		/* Let ae point to the last entry of action_list.  */
-		if (!ae->next)
-			break;
 	}
 
 	if (!got_r) {
-		new_ae = gtp_action_alloc('R');
-		if (!new_ae)
+		ae = gtp_action_alloc('R');
+		if (!ae)
 			return -ENOMEM;
-		if (ae)
-			ae->next = new_ae;
-		else {
-			if (step)
-				tpe->step_action_list = ae;
-			else
-				tpe->action_list = ae;
-		}
-
-		/* Because new_ae is the new tail.  So set it to ae. */
-		ae = new_ae;
+		list_add_tail(&ae->node, head);
 	}
 
 	if (!got_m) {
-		new_ae = gtp_action_alloc('M');
-		if (!new_ae)
+		ae = gtp_action_alloc('M');
+		if (!ae)
 			return -ENOMEM;
-		new_ae->u.m.regnum = GTP_SP_NUM;
-		new_ae->u.m.size = gtp_bt_size;
-		if (ae)
-			ae->next = new_ae;
-		else {
-			if (step)
-				tpe->step_action_list = ae;
-			else
-				tpe->action_list = ae;
-		}
+		ae->u.m.regnum = GTP_SP_NUM;
+		ae->u.m.size = gtp_bt_size;
+		list_add_tail(&ae->node, head);
 	}
 
 	return 1;
@@ -6602,8 +6706,7 @@ gtp_check_setv(struct gtp_entry *tpe, struct action *ae, int step,
 			break;
 		case GTP_VAR_CURRENT_ID:
 			tpe->flags |= GTP_ENTRY_FLAGS_CURRENT_TASK;
-			ret = 1;
-			goto out;
+			ret = 2;
 			break;
 		case GTP_VAR_PRINTK_LEVEL_ID:
 			if (loop || step) {
@@ -6709,7 +6812,9 @@ gtp_check_setv(struct gtp_entry *tpe, struct action *ae, int step,
 	}
 	ebuf[pc - 2] = (uint8_t)(arg >> 8);
 	ebuf[pc - 1] = (uint8_t)(arg & 0xff);
-	ret = 0;
+	/* Handle GTP_VAR_CURRENT_ID, it need return 2.  */
+	if (ret != 2)
+		ret = 0;
 
 out:
 	return ret;
@@ -6737,6 +6842,8 @@ gtp_check_x_simple(struct gtp_entry *tpe, struct action *ae, int step)
 	ULONGEST		top = 0;
 	ULONGEST		stack_space[STACK_MAX + 10];
 	ULONGEST		*stack = stack_space;
+	/* If true, the actions set $current.  */
+	int			is_set_current = 0;
 
 reswitch:
 	while (pc < ae->u.exp.size) {
@@ -7128,8 +7235,12 @@ reswitch:
 
 				if (dpc < pc) {
 					/* This action X include loop. */
-					ae->type = 0xff;
-					ret = 0;
+					if (is_set_current)
+						printk(KERN_WARNING "KGTP: cannot set $current inside loop.\n");
+					else {
+						ae->type = 0xff;
+						ret = 0;
+					}
 					goto release_out;
 				}
 
@@ -7153,8 +7264,12 @@ reswitch:
 
 				if (dpc < pc) {
 					/* This action X include loop. */
-					ae->type = 0xff;
-					ret = 0;
+					if (is_set_current)
+						printk(KERN_WARNING "KGTP: cannot set $current inside loop.\n");
+					else {
+						ae->type = 0xff;
+						ret = 0;
+					}
 					goto release_out;
 				}
 
@@ -7168,35 +7283,51 @@ reswitch:
 			break;
 
 		/* getv */
-		case 0x2c:
-			ret = gtp_check_getv(tpe, ae, step, ebuf, pc, &vlist);
-			if (ret != 0)
-				goto release_out;
-			pc += 2;
+		case 0x2c: {
+				int lret = gtp_check_getv(tpe, ae, step,
+							  ebuf, pc, &vlist);
+				if (lret != 0) {
+					ret = lret;
+					goto release_out;
+				}
+				pc += 2;
 
-			sp++;
-			if (sp_max < sp)
-				sp_max = sp;
+				sp++;
+				if (sp_max < sp)
+					sp_max = sp;
+			}
 			break;
 
 		/* setv */
-		case 0x2d:
-			ret = gtp_check_setv(tpe, ae, step, ebuf, pc, &vlist,
-					     0, stack, top);
-			if (ret != 0)
-				goto release_out;
-			pc += 2;
+		case 0x2d: {
+				int lret = gtp_check_setv(tpe, ae, step,
+							  ebuf, pc, &vlist,
+							  0, stack, top);
+				if (lret == 1 || lret < 0) {
+					ret = lret;
+					goto release_out;
+				}
+				if (lret == 2)
+					is_set_current = 1;
+				pc += 2;
+			}
 			break;
 
 		/* tracev */
-		case 0x2e:
-			if (tpe->flags & GTP_ENTRY_FLAGS_HAVE_PRINTK)
-				last_trace_pc = pc - 1;
+		case 0x2e: {
+				int	lret;
 
-			ret = gtp_check_getv(tpe, ae, step, ebuf, pc, &vlist);
-			if (ret != 0)
-				goto release_out;
-			pc += 2;
+				if (tpe->flags & GTP_ENTRY_FLAGS_HAVE_PRINTK)
+					last_trace_pc = pc - 1;
+
+				lret = gtp_check_getv(tpe, ae, step, ebuf,
+						      pc, &vlist);
+				if (lret != 0) {
+					ret = lret;
+					goto release_out;
+				}
+				pc += 2;
+			}
 			break;
 
 		/* div_signed */
@@ -7259,7 +7390,10 @@ out:
 		kfree(gtmp);
 		goto reswitch;
 	}
-	ret = 0;
+	if (is_set_current)
+		ret = 2;
+	else
+		ret = 0;
 #ifdef GTP_DEBUG
 	printk(GTP_DEBUG "gtp_check_x_simple: Code is OK. sp_max is %d.\n",
 	       sp_max);
@@ -7280,7 +7414,8 @@ release_out:
 		kfree(vtmp);
 	}
 
-	if ((tpe->flags & GTP_ENTRY_FLAGS_HAVE_PRINTK) && last_trace_pc > -1) {
+	if (!is_set_current && (tpe->flags & GTP_ENTRY_FLAGS_HAVE_PRINTK)
+	    && last_trace_pc > -1) {
 		/* Set the last trace code to printk code.  */
 		switch (ebuf[last_trace_pc]) {
 		/* trace */
@@ -7490,20 +7625,31 @@ reswitch:
 		/* getv */
 		case 0x2c:
 		/* tracev */
-		case 0x2e:
-			ret = gtp_check_getv(tpe, ae, step, ebuf, pc, &vlist);
-			if (ret != 0)
-				goto release_out;
-			pc += 2;
+		case 0x2e: {
+				int lret = gtp_check_getv(tpe, ae, step,
+							  ebuf, pc, &vlist);
+				if (lret != 0) {
+					ret = lret;
+					goto release_out;
+				}
+				pc += 2;
+			}
 			break;
 
 		/* setv */
-		case 0x2d:
-			ret = gtp_check_setv(tpe, ae, step, ebuf, pc, &vlist,
-					     1, NULL, 0);
-			if (ret != 0)
-				goto release_out;
-			pc += 2;
+		case 0x2d: {
+				int lret = gtp_check_setv(tpe, ae, step,
+							  ebuf, pc, &vlist,
+							  1, NULL, 0);
+				if (lret == 1 || lret < 0) {
+					ret = lret;
+					goto release_out;
+				}
+				if (lret == 2) {
+					printk(KERN_WARNING "KGTP: cannot set $current inside loop.\n");
+					goto release_out;
+				}
+			}
 			break;
 
 		/* div_signed */
@@ -7685,92 +7831,72 @@ gtp_gdbrsp_qtstart(void)
 
 	/* Check and setup actions.  */
 	for (tpe = gtp_list; tpe; tpe = tpe->next) {
-		struct action	*ae, *prev_ae;
-		int		check_step = 0;
+		struct list_head	*head, *cur, *tmp;
+		struct action		*ae;
 
 		/* Check tpe->step for old version GDB without patch
 		   http://sourceware.org/ml/gdb-cvs/2013-04/msg00044.html  */
-		if (tpe->step != 0 && tpe->step_action_list == NULL)
+		if (tpe->step != 0 && list_empty(&tpe->step_action_list))
 			tpe->step = 0;
 
 		/* Check cond.  */
 		if (tpe->cond) {
-			ret = gtp_check_x(tpe, tpe->cond, 0);
-			if (ret > 0) {
-				kfree(tpe->cond->u.exp.buf);
-				kfree(tpe->cond);
-				tpe->cond = NULL;
-			} else if (ret < 0) {
-				printk(KERN_WARNING "gtp_check_x get error %d\n",
-				       ret);
+			int	lret = gtp_check_x(tpe, tpe->cond, 0);
+			if (lret == 1) {
+				printk(KERN_WARNING "KGTP: cannot set special TSV inside condition.\n");
+				goto out;
+			} else if (lret == 2) {
+				printk(KERN_WARNING "KGTP: cannot set $current inside condition.\n");
+				goto out;
+			} else if (lret != 0) {
+				ret = lret;
+				printk(KERN_WARNING "KGTP: gtp_check_x get error %d\n",
+				       lret);
 				goto out;
 			}
 		}
 
 		/* Check X.  */
+		head = &tpe->action_list;
 next_list:
-		prev_ae = NULL;
-		for (ae = check_step ? tpe->step_action_list : tpe->action_list;
-		     ae; ae = ae->next) {
-re_check:
+		list_for_each_safe(cur, tmp, head) {
+			ae = list_entry(cur, struct action, node);
 			if (ae->type == 'X' || ae->type == 0xff) {
-				ret = gtp_check_x(tpe, ae, check_step);
-				if (ret > 0) {
-					struct action	*old_ae = ae;
-
+				int lret = gtp_check_x(tpe, ae,
+						       (head == &tpe->step_action_list));
+				if (lret == 1) {
 					/* Remove ae from action_list.  */
-					ae = ae->next;
-					if (prev_ae)
-						prev_ae->next = ae;
-					else {
-						if (check_step)
-							tpe->step_action_list = ae;
-						else
-							tpe->action_list = ae;
-					}
-
-					kfree(old_ae->u.exp.buf);
-					kfree(old_ae);
-
-					if (ae)
-						goto re_check;
-					else
-						break;
-				} else if (ret < 0) {
+					list_del(&ae->node);
+					gtp_action_release(ae);
+				} else if (lret == 2) {
+					/* Set this actions to get_regs.  */
+					gtp_action_release(tpe->get_regs);
+					list_del(&ae->node);
+					tpe->get_regs = ae;
+				} else if (lret != 0) {
 					printk(KERN_WARNING "KGTP: gtp_check_x get error %d\n",
-					       ret);
+					       lret);
 					goto out;
 				}
 			}
-
-			prev_ae = ae;
 		}
-		if (check_step == 0) {
+		if (head == &tpe->action_list) {
 			/* Begin to check step_action_list.  */
-			check_step = 1;
+			head = &tpe->step_action_list;
 			goto next_list;
-		}	
+		}
 
 		/* Check the tracepoint that have printk.  */
 		if (tpe->flags & GTP_ENTRY_FLAGS_HAVE_PRINTK) {
-			struct action	*ae, *prev_ae = NULL;
 			struct gtpsrc	*src, *srctail = NULL;
 
-restart:
-			for (ae = tpe->action_list; ae;
-			     prev_ae = ae, ae = ae->next) {
+			list_for_each_safe(cur, tmp, &tpe->action_list) {
+				ae = list_entry(cur, struct action, node);
 				switch (ae->type) {
 				case 'R':
 					/* Remove it. */
-					if (prev_ae)
-						prev_ae->next = ae->next;
-					else
-						tpe->action_list = ae->next;
-					kfree(ae);
-					if (prev_ae)
-						ae = prev_ae;
-					else
-						goto restart;
+					list_del(&ae->node);
+					gtp_action_release(ae);
 					break;
 				case 'M':
 					printk(KERN_WARNING "qtstart: action "
@@ -8068,6 +8194,8 @@ restart:
 			/* Register hw breakpoints.  */
 			for (i = 0; i < HWB_NUM; i++) {
 				perf_overflow_handler_t	triggered;
+				/* Step 1: Set the id to addr and let following code check it.
+				   Make sure the num of a hw. */
 				attr.bp_addr = i;
 				switch (i) {
 				case 0:
@@ -8096,8 +8224,8 @@ restart:
 				}
 			}
 
-			/* Make sure breakinfo[i] is which hw breakpoint and set
-			it to breakinfo[i].num.  */
+			/* Step 2: Make sure breakinfo[i] is which hw breakpoint and set
+			   it to breakinfo[i].num.  */
 			for (i = 0; i < HWB_NUM; i++) {
 				unsigned long	num;
 
@@ -8290,24 +8418,22 @@ static int
 gtp_parse_x(struct gtp_entry *tpe, struct action *ae, char **pkgp)
 {
 	ULONGEST	size;
-	int		ret = 0, i, h, l;
+	int		ret = -EINVAL, i, h, l;
 	char		*pkg = *pkgp;
 
-	if (pkg[0] == '\0') {
-		ret = -EINVAL;
+	if (pkg[0] == '\0')
 		goto out;
-	}
 	pkg = hex2ulongest(pkg, &size);
-	if (pkg[0] != ',') {
-		ret = -EINVAL;
+	if (pkg[0] != ',')
 		goto out;
-	}
 	ae->u.exp.size = (unsigned int)size;
 	pkg++;
 
 	ae->u.exp.buf = kmalloc(ae->u.exp.size, GFP_KERNEL);
-	if (!ae->u.exp.buf)
-		return -ENOMEM;
+	if (!ae->u.exp.buf) {
+		ret = -ENOMEM;
+		goto out;
+	}
 
 	for (i = 0; i < ae->u.exp.size
 		    && hex2int(pkg[0], &h) && hex2int(pkg[1], &l);
@@ -8323,11 +8449,11 @@ gtp_parse_x(struct gtp_entry *tpe, struct action *ae, char **pkgp)
 	}
 	if (i != ae->u.exp.size) {
 		kfree(ae->u.exp.buf);
-		ret = -EINVAL;
 		goto out;
 	}
 
 	ae->u.exp.need_var_lock = 0;
+	ret = 0;
 
 out:
 	*pkgp = pkg;
@@ -8422,10 +8548,10 @@ gtp_gdbrsp_qtdp(char *pkg)
 				return -EINVAL;
 			pkg++;
 			step_action = 1;
-		} else if (tpe->step_action_list)
+		} else if (!list_empty(&tpe->step_action_list))
 			step_action = 1;
 		while (pkg[0]) {
-			struct action	*ae = NULL, *atail = NULL;
+			struct action	*ae = NULL;
 			char *pkg_cmd = pkg;
 
 #ifdef GTP_DEBUG
@@ -8486,7 +8612,7 @@ gtp_gdbrsp_qtdp(char *pkg)
 					pkg++;
 					ret = gtp_parse_x(tpe, ae, &pkg);
 					if (ret) {
-						kfree(ae);
+						gtp_action_release(ae);
 						ae = NULL;
 
 						if (ret < 0)
@@ -8505,36 +8631,17 @@ gtp_gdbrsp_qtdp(char *pkg)
 			if (ae) {
 				/* Save the cmd.  */
 				if (gtp_src_add (pkg_cmd, pkg, &(tpe->action_cmd))) {
-					kfree(ae);
+					gtp_action_release(ae);
 					return -ENOMEM;
 				}
 				/* Add ae to tpe.  */
 				if ((ae->type == 'X' || ae->type == 0xff)
 				    && addnew && !tpe->cond) {
 					tpe->cond = ae;
-					tpe->cond->next = NULL;
-				} else if (!step_action && !tpe->action_list) {
-					tpe->action_list = ae;
-					atail = ae;
-				} else if (step_action
-					   && !tpe->step_action_list) {
-					tpe->step_action_list = ae;
-					atail = ae;
-				} else {
-					if (atail == NULL) {
-						if (step_action)
-							atail =
-							  tpe->step_action_list;
-						else
-							atail =
-							  tpe->action_list;
-						for (; atail->next;
-						     atail = atail->next)
-							;
-					}
-					atail->next = ae;
-					atail = ae;
-				}
+				} else if (!step_action)
+					list_add_tail(&ae->node, &tpe->action_list);
+				else
+					list_add_tail(&ae->node, &tpe->step_action_list);
 			}
 		}
 	} else
@@ -9404,7 +9511,7 @@ gtp_gdbrsp_qtenable_qtdisable(char *pkg, int enable)
 {
 	ULONGEST		num, addr;
 	struct gtp_entry	*tpe;
-	int			ret = -ESRCH;
+	int			ret;
 
 	pkg = hex2ulongest(pkg, &num);
 	if (pkg[0] != ':')
@@ -11638,7 +11745,7 @@ gtp_frame_file_header(struct gtp_realloc_s *grs, int is_end)
 	struct gtp_var		*var;
 	struct list_head	*cur;
 	int			tmpsize;
-	int			ret = -1;
+	int			ret = -ENOMEM;
 
 	/* Head. */
 	wbuf = gtp_realloc(grs, 8, 0);
@@ -11759,6 +11866,7 @@ recheck:
 		char			*frame;
 #endif
 		struct gtp_realloc_s	gr;
+		int			lret;
 
 #ifdef GTP_FRAME_SIMPLE
 		if (gtp_frame_is_circular)
@@ -11792,12 +11900,17 @@ recheck:
 		}
 #endif
 		gr.real_size += 200;
-		ret = gtp_realloc_alloc(&gr, gr.real_size);
-		if (ret != 0)
+		lret = gtp_realloc_alloc(&gr, gr.real_size);
+		if (lret != 0) {
+			ret = lret;
 			goto out;
+		}
 
-		if (gtp_frame_file_header(&gr, 0))
+		lret = gtp_frame_file_header(&gr, 0);
+		if (lret != 0) {
+			ret = lret;
 			goto out;
+		}
 
 		/* Frame.  */
 		if (atomic_read(&gtp_frame_create) == 0)
@@ -11864,7 +11977,7 @@ end:
 		}
 	}
 	if (copy_to_user(buf, gtp_frame_file + *ppos, ret)) {
-		size = -EFAULT;
+		ret = -EFAULT;
 		goto out;
 	}
 	*ppos += ret;
@@ -12358,7 +12471,7 @@ static ssize_t
 gtpframe_pipe_read(struct file *file, char __user *buf, size_t size,
 		   loff_t *ppos)
 {
-	ssize_t			ret = -ENOMEM;
+	ssize_t			ret;
 	struct gtpframe_pipe_s	*gps = file->private_data;
 	loff_t			entry_offset;
 
@@ -12369,7 +12482,7 @@ gtpframe_pipe_read(struct file *file, char __user *buf, size_t size,
 
 	if (!gtp_realloc_is_alloced(gps->grs)) {
 		ret = gtp_realloc_alloc(gps->grs, 200);
-		if (ret != 0)
+		if (ret)
 			goto out;
 	} else if (*ppos < gps->begin
 		   || *ppos >= (gps->begin + gps->grs->size)) {
@@ -12393,7 +12506,8 @@ gtpframe_pipe_read(struct file *file, char __user *buf, size_t size,
 
 	if (gtp_realloc_is_empty(gps->grs)) {
 		if (*ppos == 0) {
-			if (gtp_frame_file_header(gps->grs, 1))
+			ret = gtp_frame_file_header(gps->grs, 1);
+			if (ret)
 				goto out;
 #ifdef GTP_DEBUG
 			printk(GTP_DEBUG "gtpframe_pipe_read: Get header.\n");
@@ -12405,7 +12519,7 @@ gtpframe_pipe_read(struct file *file, char __user *buf, size_t size,
 #ifdef GTP_FTRACE_RING_BUFFER
 			ret = gtpframe_pipe_get_entry(gps->grs);
 #endif
-			if (ret < 0)
+			if (ret)
 				goto out;
 #ifdef GTP_DEBUG
 			printk(GTP_DEBUG "gtpframe_pipe_read: Get entry.\n");
@@ -12654,7 +12768,7 @@ static void gtp_exit(void);
 
 static int __init gtp_init(void)
 {
-	int		ret = -ENOMEM;
+	int		ret;
 
 #ifdef CONFIG_X86
 	gtp_have_watch_tracepoint = 0;
@@ -12762,6 +12876,7 @@ static int __init gtp_init(void)
 		goto out;
 #endif
 
+	ret = -ENOMEM;
 	gtp_wq = create_singlethread_workqueue("gtpd");
 	if (gtp_wq == NULL)
 		goto out;
