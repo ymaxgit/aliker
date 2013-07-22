@@ -114,6 +114,13 @@ struct gtp_trace_s {
 	   HWB point to the struct.
 	   If not, it will set to NULL.  */
 	struct gtp_hwb_s		*hwb;
+	/* hwb_current_val have the value of hwb address watch
+	   when hwb_current_val_gotten is true.  */
+	int64_t				hwb_current_val;
+	int				hwb_current_val_gotten;
+
+	/* For set $current.  */
+	struct pt_regs			*tmp_regs;
 
 	int64_t				printk_tmp;
 	unsigned int			printk_level;

@@ -3,7 +3,7 @@
 		By Hui Zhu <teawater@gmail.com>
 		https://code.google.com/p/kgtp/wiki/HOWTO
 
-Update in 2013-05-08
+Update in 2013-06-26
 
 What is KGTP
 Get help or report issues about KGTP
@@ -11,15 +11,21 @@ Table of different between GDB debug normal program and KGTP
 Preparatory work before use KGTP
 Linux kernel
 If your system use the Linux kernel that is built by yourself
+If use with Linux kernel of Android
 If your system use the Linux kernel from distribution
 Ubuntu
+The standard method of install the Linux kernel debug image
+The second method of install the Linux kernel debug image
+Install the Linux kernel headers
+Install the Linux kernel source
 Fedora
+Install the Linux kernel debug image
+Install the Linux kernel devel package
 Others
 Make sure current Linux kernel debug image is right
 Where is the current Linux kernel debug image
 Use /proc/kallsyms
 Use linux_banner
-Handle the issue that cannot find any file in "/sys/" or "/sys/kernel/debug/"
 Handle the issue that Linux kernel debug image's address info is not same with Linux kernel when it running
 Get KGTP
 Get KGTP through http
@@ -32,14 +38,21 @@ Install and uninstall KGTP
 Use KGTP with DKMS
 Use KGTP patch for Linux kernel
 Install GDB for KGTP
-Howto use
-Exec it
+How to let GDB connect to KGTP
+Normal Linux
+Insmod the KGTP module
+Handle the issue that cannot find "/sys/kernel/debug/gtp"
 Make GDB connect to gtp
 GDB on the current machine
-If GDB on remote machine
+GDB on remote machine
+Android
+Insmod the KGTP module
+Handle the issue that cannot find "/sys/kernel/debug/gtp"
+GDB connect to the KGTP
 Add module symbols to GDB
-How to use getmod.py
 How to use getmod
+How to use getmod.py
+Howto use GDB control KGTP trace and debug Linux kernel
 Direct access the current value in normal mode
 The memory of Linux kernel
 the memory of the user space program
@@ -71,6 +84,8 @@ How to use trace state variables
 Simple trace state variables
 Per_cpu trace state variables
 How to define
+Local CPU variables
+CPU id variables
 Example 1
 Example 2
 Special trace state variables $current_task, $current_task_pid, $current_thread_info, $cpu_id, $dump_stack, $printk_level, $printk_format, $printk_tmp ,$clock, $hardirq_count, $softirq_count and $irq_count
@@ -94,6 +109,7 @@ Howto use while-stepping
 Read the traceframe of while-stepping
 Howto show a variable whose value has been optimized away
 Update your GCC
+Get the way that access the variable that has been out through parse ASM code
 How to get the function pointer point to
 If the debug info of the function pointer is not optimized out
 If the debug info of the function pointer is optimized out
@@ -118,14 +134,13 @@ The perf event type and config
 Enable and disable all the perf event in a CPU with $p_pe_en
 GDB scripts to help with set and get the perf event trace state variables
 What is KGTP
-KGTP is a flexible , lightweight and realtime Linux debugger and tracer.
+KGTP is a flexible, lightweight and realtime Linux (include Android) debugger and tracer.
 To use it, you don't need patch or rebuild the Linux kernel. Just build KGTP module and insmod it is OK.
 
 It makes Linux Kernel supply a GDB remote debug interface. Then GDB in current machine or remote machine can debug and trace Linux kernel and user space program through GDB tracepoint and some other functions without stopping the Linux Kernel.
 And even if the board doesn't have GDB on it and doesn't have interface for remote debug. It can debug the Linux Kernel using offline debug (See HOWTO#/sys/kernel/debug/gtpframe_and_offline_debug).
 KGTP supports X86-32, X86-64, MIPS and ARM.
 KGTP is tested on Linux kernel 2.6.18 to upstream.
-And it can work with Android (See HowToUseKGTPinAndroid).
 
 For new user of KGTP, please go to see Quickstart.
 
@@ -140,7 +155,7 @@ This table is for the people that have experience using GDB debug normal program
 
 Function	GDB debug normal program	GDB control KGTP debug Linux kernel
 Preparatory work	 Have a GDB installed in your system.
-Program built with "-g".	 KGTP need GDB 7.3 or newer version because it use some new functions of GDB. If your system doesn't supply it，you can get new version GDB built with "-static" that can running is most of Linux system in http://code.google.com/p/gdbt/ and you can get an introduce about howto built new GDB step by step in there.
+Program built with "-g".	 KGTP need GDB 7.6 or newer version because it use some new functions of GDB. If your system doesn't supply it，you can get new version GDB in http://code.google.com/p/gdbt/ and you can get an introduce about howto built new GDB step by step in there.
 You alse need do some preparatory work with Linux kernel and KGTP. Please goto HOWTO#Preparatory_work_before_use_KGTP get howto do it.
 Attach	 Use command "gdb -p pid" or GDB command "attach pid" can attach a program that running in the system.	 Need insmod gtp.ko first, see #Exec_it.
 Then let GDB connect to KGTP, see #Make_GDB_connect_to_gtp.
@@ -166,11 +181,25 @@ General setup  --->
 Kernel hacking  --->
         [*] Debug Filesystem
         [*] Compile the kernel with debug info
+Please rebuild your Linux kernel if you change any options of the config.
+
+If use with Linux kernel of Android
+The default Linux kernel config of Android should not support KGTP. To use KGTP, Linux kernel of Android need open following options:
+
+[*] Enable loadable module support  --->
+General setup  ---> 
+        [*] Prompt for development and/or incomplete code/drivers
+        [*] Kprobes
+Kernel hacking  --->
+        [*] Debug Filesystem
+        [*] Compile the kernel with debug info
+Please rebuild your Linux kernel if you change any options of the Linux kernel config.
+
 If your system use the Linux kernel from distribution
 You need install some Linux kernel package.
 
 Ubuntu
-Install the Linux kernel debug image
+The standard method of install the Linux kernel debug image
 1) Add debug source to the sources list of Ubuntu.
 
 Create an /etc/apt/sources.list.d/ddebs.list by running the following line at a terminal:
@@ -192,6 +221,13 @@ sudo apt-get install linux-image-$(uname -r)-dbgsym
 Then you can find Linux kernel debug image in "/usr/lib/debug/boot/vmlinux-$(uname -r)".
 Please note that this step Get Linux kernel debug image need do again when Linux kernel update.
 
+The second method of install the Linux kernel debug image
+If you got some trouble with the standard method, please use following commands to install the Linux kernel debug image.
+
+wget http://ddebs.ubuntu.com/pool/main/l/linux/linux-image-$(uname -r)-dbgsym_$(dpkg -s linux-image-$(uname -r) | grep ^Version: | sed 's/Version: //')_$(uname -i | sed 's/x86_64/amd64/').ddeb
+sudo dpkg -i linux-image-$(uname -r)-dbgsym_$(dpkg -s linux-image-$(uname -r) | grep ^Version: | sed 's/Version: //')_$(uname -i | sed 's/x86_64/amd64/').ddeb
+Please note that this method need do again when Linux kernel update.
+
 Install the Linux kernel headers
 sudo apt-get install linux-headers-generic
 Install the Linux kernel source
@@ -206,11 +242,18 @@ Please note that this step Install the Linux kernel source need do again when Li
 
 Fedora
 Install the Linux kernel debug image
+Use following command:
+
+sudo debuginfo-install kernel
+Or:
+
 sudo yum --enablerepo=fedora-debuginfo install kernel-debuginfo
 Then you can find Linux kernel debug image in "/usr/lib/debug/lib/modules/$(uname -r)/vmlinux".
 
 Install the Linux kernel devel package
 sudo yum install kernel-devel-$(uname -r)
+Please note that after update the Linux kernel package, you may need to call this command.
+
 Others
 You need install the Linux kernel debug image package and the Linux Kernel source.
 
@@ -256,21 +299,6 @@ Remote debugging using /sys/kernel/debug/gtp
 $2 = "Linux version 3.4.0-rc4+ (teawater@teawater-Precision-M4600) (gcc version 4.6.3 (GCC) ) #3 SMP Tue Apr 24 13:29:05 CST 2012\n"
 This linux_banner is the kernel info that Linux kernel that KGTP is tracing. If it is same with the prev kernel info, the Linux kernel debug image is right.
 
-Handle the issue that cannot find any file in "/sys/" or "/sys/kernel/debug/"
-Because KGTP interface is "/sys/kernel/debug/gtp", it will cannot be used if cannot find any file in "/sys/" or "/sys/kernel/debug/".
-
-If you got this issue, please make sure "Debug Filesystem" is opened in your kernel config first. If_your_system_use_the_Linux_kernel_that_is_built_by_yourself?
-
-If it is opened, please use following command mount sysfs.
-
-sudo mount -t sysfs none /sys/
-Then you can find files in "/sys/". 
-
-please use following command mount debugfs.
-
-mount -t debugfs none /sys/kernel/debug/
-Then you can find files in "/sys/kernel/debug/".
-
 Handle the issue that Linux kernel debug image's address info is not same with Linux kernel when it running
 In X86_32, you will found that the Linux kernel debug image's address info is not same with Linux kernel when it running through the ways in HOWTO#Make_sure_current_Linux_kernel_debug_image_is_right. And you determine the Linux kernel debug image is right.
 This issue is because:
@@ -288,7 +316,11 @@ Get KGTP through http
 Please goto http://code.google.com/p/kgtp/downloads/list OR UPDATE to download the package.
 
 Get KGTP through svn
-Some people have trouble with access to KGTP website. You can access kgtp through svn:
+Following command will get the last release version of KGTP:
+
+svn checkout http://kgtp.googlecode.com/svn/tags/kgtp/
+
+Following command will get all the files about KGTP:
 
 svn checkout http://kgtp.googlecode.com/svn/ kgtp-read-only
 kgtp-read-only/tags/ Present for each release of KGTP.
@@ -317,7 +349,9 @@ Normal compile
 cd kgtp/
 make
 In some build environment (for example Android) will get some error with user space program getmod or getframe. Please ignore this error and use the gtp.ko in this directory.
+If you get error message "/usr/bin/ld: cannot find -lc" in Fedora, please use following command handle it.
 
+sudo yum install glibc-static
 Compile KGTP with some special config
 Most of time, KGTP can auto select right options to build with Various versions of Linux kernel.
 But if you want config special options with yourself, you can read following part:
@@ -365,12 +399,15 @@ gtp_2.6.33_to_2.6.38.patch is the patch for Linux kernel from 2.6.33 to 2.6.38.
 gtp_2.6.20_to_2.6.32.patch is the patch for Linux kernel from 2.6.20 to 2.6.32.
 gtp_older_to_2.6.19.patch is the patch for Linux kernel 2.6.19 and older version.
 Install GDB for KGTP
-The GDB that older than 7.3 have some bugs of tracepoint. And some functions of GDB are not very well.
-So if your GDB is older than 7.3 please go to https://code.google.com/p/gdbt/ to get howto install GDB for KGTP.
+The GDB that older than 7.6 have some bugs of tracepoint. And some functions of GDB are not very well.
+So if your GDB is older than 7.6 please go to https://code.google.com/p/gdbt/ to get howto install GDB for KGTP. It supplies sources of UBUBTU, CentOS, Fedora, Mandriva, RHEL, SLE, openSUSE. Also have static binary for others.
 If you have issue about GDB please get help according to HOWTO#Report_issues_about_KGTP.
 
-Howto use
-Exec it
+How to let GDB connect to KGTP
+To use KGTP function need let GDB connect to KGTP first.
+
+Normal Linux
+Insmod the KGTP module
 If you have installed KGTP in your system, you can:
 
 sudo modprobe gtp
@@ -378,6 +415,17 @@ Or you can use the kgtp module in the directory.
 
 cd kgtp/
 sudo insmod gtp.ko
+Handle the issue that cannot find "/sys/kernel/debug/gtp"
+If you got this issue, please make sure "Debug Filesystem" is opened in your kernel config first. If_your_system_use_the_Linux_kernel_that_is_built_by_yourself?
+If it is opened, please use following command mount sysfs.
+
+sudo mount -t sysfs none /sys/
+Maybe you will got some error for examle "sysfs is already mounted on /sys". Please ignore it. 
+please use following command mount debugfs.
+
+mount -t debugfs none /sys/kernel/debug/
+Then you can find "/sys/kernel/debug/gtp".
+
 Make GDB connect to gtp
 Please note that let GDB open a right vmlinux file is very important. Please goto #Make_sure_current_Linux_kernel_debug_image_is_right get how to do it.
 
@@ -388,35 +436,68 @@ Remote debugging using /sys/kernel/debug/gtp
 0x0000000000000000 in ?? ()
 After that, you can begin to use GDB command trace and debug the Linux Kernel.
 
-If GDB on remote machine
-#Open the KGTP interface in current machine.
+GDB on remote machine
+Use nc map the KGTP interface to port 1024.
+
 sudo su
 nc -l 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp
-(nc -l -p 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp for old version netcat.)
-#Let gdb connect to the port 1234
-gdb ./vmlinux
+#(nc -l -p 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp for old version netcat.)
+After that, nc will hang there to wait connection.
+Let gdb connect to the port 1234.
+
+gdb-release ./vmlinux
 (gdb) target remote xxx.xxx.xxx.xxx:1234
+After that, you can begin to use GDB command trace and debug the Linux Kernel.
+
+Android
+This video introduces use GDB connect to the KGTP in the Android, Please goto http://youtu.be/_UGN2j8Ctg0 or http://www.tudou.com/programs/view/FjkQ6HhPnfE/ to see it.
+
+Insmod the KGTP module
+First, make sure ADB has connected with Android.
+Second, copy KGTP module to Android.
+
+sudo adb push gtp.ko /
+Directory "/" may be read-only. You can choice other directory or use command "sudo adb shell mount -o rw,remount /" remount the directory to can write.
+Third, insmod the module.
+
+adb shell insmod /gtp.ko
+Handle the issue that cannot find "/sys/kernel/debug/gtp"
+If you got this issue, please make sure "Debug Filesystem" is opened in your kernel config first. If_your_system_use_the_Linux_kernel_that_is_built_by_yourself?
+If it is opened, please use following command mount sysfs.
+
+sudo adb shell mount -t sysfs none /sys/
+Maybe you will got some error for examle "Device or resource busy". Please ignore it. 
+please use following command mount debugfs.
+
+sudo adb shell mount -t debugfs none /sys/kernel/debug/
+Then you can find "/sys/kernel/debug/gtp".
+
+GDB connect to the KGTP
+Use nc map the KGTP interface to port 1024.
+
+adb forward tcp:1234 tcp:1234
+adb shell "nc -l -p 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp"
+#(adb shell "nc -l 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp" for new version netcat.)
+After that, nc will hang there to wait connection.
+Let gdb connect to the port 1234.
+
+gdb-release ./vmlinux
+(gdb) target remote :1234
 After that, you can begin to use GDB command trace and debug the Linux Kernel.
 
 Add module symbols to GDB
 Sometimes you need to add a Linux kernel module's symbols to GDB to debug it.
 Add symbols with hand is not very easy, so KGTP package include an GDB python script "getmod.py" and a program "getmod" can help you.
 
-How to use getmod.py
-Connect to KGTP before use the getmod.py.
-
-(gdb) source ~/kgtp/getmod.py
-Then this script will auto load the Linux kernel module's symbols to GDB.
-
 How to use getmod
 "getmod" is written by C so you can use it anywhere even if in an embedded environment.
 For example:
 
-#Following command save Linux Kernel module info to the file ~/tmp/mi in GDB
+#Following command save Linux Kernel module info to the file /tmp/mi in GDB
 #command format.
-sudo getmod >~/tmp/mi
+sudo getmod >/tmp/mi
 #in gdb part:
-(gdb) source ~/tmp/mi
+(gdb) source /tmp/mi
 add symbol table from file "/lib/modules/2.6.39-rc5+/kernel/fs/nls/nls_iso8859-1.ko" at
         .text_addr = 0xf80de000
         .note.gnu.build-id_addr = 0xf80de088
@@ -432,6 +513,14 @@ If you use remote debug or offline debug, maybe you need change the base directo
 
 #/lib/modules/2.6.39-rc5+/kernel is replaced to sudo ./getmod -r /home/teawater/kernel/b26
 sudo ./getmod -r /home/teawater/kernel/b26 >~/tmp/mi
+How to use getmod.py
+Please note that static build GDB that download from https://code.google.com/p/gdbt/ cannot use getmod.py.
+Connect to KGTP before use the getmod.py.
+
+(gdb) source ~/kgtp/getmod.py
+Then this script will auto load the Linux kernel module's symbols to GDB.
+
+Howto use GDB control KGTP trace and debug Linux kernel
 Direct access the current value in normal mode
 After GDB connect to KGTP, if it doesn't select any a entry of trace frame bufffer with GDB command "tfind", GDB in the normal mode. Then you can direct access the current value of memory (Linux kernel or the user space program) and the trace state variables without stop anything.
 If you have selected a trace frame entry, use GDB command "tfind -1" to return to normal mode. Please goto #Use_tfind_select_the_entry_inside_the_trace_frame_info get more info about GDB command "tfind".
@@ -1185,7 +1274,8 @@ $watch_stop	 Set a address to $watch_stop will let a dynamic watch tracepoint th
 $watch_trace_num	 Not support	 Not support	 Not support	 Not support	 Not support	 The tracepoint number that setup this dynamic watch tracepoint.
 $watch_trace_addr	 Not support	 Not support	 Not support	 Not support	 Not support	 The tracepoint address that setup this dynamic watch tracepoint.
 $watch_addr	 Not support	 Not support	 Not support	 The address that this watch tracepoint is watching.	 Not support	 The address that this watch tracepoint is watching.
-$watch_val	 Not support	 Not support	 Not support	 The value of the memory that this watch tracepoint is watching.	 Not support	 The value of the memory that this watch tracepoint is watching.
+$watch_val	 Not support	 Not support	 Not support	 The current value of the memory that this watch tracepoint is watching.	 Not support	 The current value of the memory that this watch tracepoint is watching.
+$watch_prev_val	 Not support	 Not support	 Not support	 The previous value of the memory that this watch tracepoint is watching.	 Not support	 The previous value of the memory that this watch tracepoint is watching.
 $watch_count	 Not support	 Not support	 Not support	 Not support	 Not support	 A special count for this watch tracepoint session.
 Static watch tracepoint
 You can use static watch tracepoint when you want watch value of a global variable or some memory that you can get its address directly. Following example is watch jiffies_64's write:
@@ -1199,6 +1289,7 @@ trace *&jiffies_64
     teval $watch_type=1
     teval $watch_size=8
     collect $watch_val
+    collect $watch_prev_val
     collect $bt
   end
 Dynamic watch tracepoint
@@ -1212,6 +1303,7 @@ trace *1
     collect $bt
     collect $watch_addr
     collect $watch_val
+    collect $watch_prev_val
   end
 Define a dynamic watch tracepoint. The address "1" of it is not the address of memory that it will watch. It just help tracepoint that setup this dynamic watch tracepoint can find it.
 
@@ -1235,6 +1327,7 @@ Define a normal tracepoint that stop the tracepoint that watch file->f_pos and f
 
 Use while-stepping let Linux kernel do single step
 Please note that while-stepping is just support by X86 and X86_64 now.
+Video about howto use while-stepping http://www.codepark.us/a/13.
 
 Howto use while-stepping
 while-stepping is a special tracepoint action that include some actions with it.
@@ -1316,6 +1409,109 @@ There are 2 ways to handle it:
 Update your GCC
 The VTA branch http://gcc.gnu.org/wiki/Var_Tracking_Assignments was merged for GCC 4.5. This helps a lot with generating dwarf for previously "optimized out" values.
 
+Get the way that access the variable that has been out through parse ASM code
+Even if update the GCC to the newer version, you will still meet the issue. The main reason is the data is inside the registers but GCC doesn't put it to debug info. Then GDB just can output this variable has been optimized away.
+But you can get where is the variable from ASM code and access it inside the tracepoint actions.
+Following is a example that find variable "f" of function get_empty_filp and use it in tracepoint actions:
+We want collect the value of "f" but looks it has been optimized away.
+
+(gdb) list get_empty_filp
+...
+...
+...
+137             INIT_LIST_HEAD(&f->f_u.fu_list);
+138             atomic_long_set(&f->f_count, 1);
+139             rwlock_init(&f->f_owner.lock);
+140             spin_lock_init(&f->f_lock);
+141             eventpoll_init_file(f);
+(gdb) 
+142             /* f->f_version: 0 */
+143             return f;
+(gdb) trace 143
+Tracepoint 1 at 0xffffffff8119b30e: file fs/file_table.c, line 143.
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+>collect f
+`f' is optimized away and cannot be collected.
+Now use "disassemble /m" command get the ASM code and source line that have relation with "f" and parse them.
+
+(gdb) disassemble /m get_empty_filp
+...
+...
+...
+125             f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
+126             if (unlikely(!f))
+   0xffffffff8119b28c <+92>:    test   %rax,%rax
+   0xffffffff8119b292 <+98>:    je     0xffffffff8119b362 <get_empty_filp+306>
+
+127                     return ERR_PTR(-ENOMEM);
+   0xffffffff8119b362 <+306>:   mov    $0xfffffffffffffff4,%rax
+   0xffffffff8119b369 <+313>:   jmp    0xffffffff8119b311 <get_empty_filp+225>
+Code from "+98" to "+132" is not show in this part because they belong to other inline function. But you can get them with GDB command "disassemble get_empty_filp".
+
+   0xffffffff8119b287 <+87>:    callq  0xffffffff81181cb0 <kmem_cache_alloc>
+   0xffffffff8119b28c <+92>:    test   %rax,%rax
+   0xffffffff8119b28f <+95>:    mov    %rax,%rbx
+   0xffffffff8119b292 <+98>:    je     0xffffffff8119b362 <get_empty_filp+306>
+   0xffffffff8119b298 <+104>:   mov    0xb4d406(%rip),%edx        # 0xffffffff81ce86a4 <percpu_counter_batch>
+   0xffffffff8119b29e <+110>:   mov    $0x1,%esi
+   0xffffffff8119b2a3 <+115>:   mov    $0xffffffff81c05340,%rdi
+---Type <return> to continue, or q <return> to quit---
+   0xffffffff8119b2aa <+122>:   callq  0xffffffff8130dd20 <__percpu_counter_add>
+According to the ASM code you can see that return value of kmem_cache_alloc is inside $rax and its value is set to $rbx.
+Looks $rbx has the value of "f". Let's check other ASM code.
+
+128     
+129             percpu_counter_inc(&nr_files);
+130             f->f_cred = get_cred(cred);
+   0xffffffff8119b2b4 <+132>:   mov    %r12,0x70(%rbx)
+Set a value to element of f, the ASM code is set value of $r12 to a address that base address is $rbx. It also looks like $rbx is "f".
+
+131             error = security_file_alloc(f);
+   0xffffffff8119b2b8 <+136>:   mov    %rbx,%rdi
+   0xffffffff8119b2bb <+139>:   callq  0xffffffff8128ee30 <security_file_alloc>
+
+132             if (unlikely(error)) {
+   0xffffffff8119b2c0 <+144>:   test   %eax,%eax
+   0xffffffff8119b2c2 <+146>:   jne    0xffffffff8119b36b <get_empty_filp+315>
+---Type <return> to continue, or q <return> to quit---
+
+133                     file_free(f);
+134                     return ERR_PTR(error);
+   0xffffffff8119b393 <+355>:   movslq -0x14(%rbp),%rax
+   0xffffffff8119b397 <+359>:   jmpq   0xffffffff8119b311 <get_empty_filp+225>
+
+135             }
+136     
+137             INIT_LIST_HEAD(&f->f_u.fu_list);
+138             atomic_long_set(&f->f_count, 1);
+139             rwlock_init(&f->f_owner.lock);
+   0xffffffff8119b2e4 <+180>:   movl   $0x100000,0x50(%rbx)
+
+140             spin_lock_init(&f->f_lock);
+   0xffffffff8119b2c8 <+152>:   xor    %eax,%eax
+   0xffffffff8119b2d1 <+161>:   mov    %ax,0x30(%rbx)
+
+141             eventpoll_init_file(f);
+142             /* f->f_version: 0 */
+143             return f;
+   0xffffffff8119b30e <+222>:   mov    %rbx,%rax
+And after check other ASM code. You can make sure that $rbx is "f".
+Then you can access "f" through access $rbx in tracepoint actions, for example:
+
+(gdb) trace 143
+Tracepoint 1 at 0xffffffff8119b30e: file fs/file_table.c, line 143.
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+#collect f
+>collect $rbx
+#collect *f
+>collect *((struct file *)$rbx)
+#collect f->f_op
+>collect ((struct file *)$rbx)->f_op
+>end
 How to get the function pointer point to
 If the debug info of the function pointer is not optimized out
 You can collect it directly and print what it point to. For example:
@@ -1466,8 +1662,24 @@ Read memory of user space program directly
 KGTP can read memory directly without stop this user space program. Please goto HOWTO#the_memory_of_the_user_space_program get how to do it.
 
 collect stack (for backtrace) of user space program in tracepoint
+$current is a special trace state variable that if the action of an tracepoint access it, this tracepint will access the values of the registers and the memory of current task instead of Linux kernel.
+In general, the tracepoint will get the registers value of current task from task_pt_regs. Then collect $current in tracepoint actions will let this tracepoint access values of current task. For example:
+
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+>collect $current
+>collect $bt
+>end
+In addition, for some special function that its arguments include the pointer to the registers(for example: do_IRQ function of X86), tracepoint need get the registers from the arguments of fuction. Then set the pointer to $current will let this tracepoint get it. For example:
+
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+>teval $current=(uint64_t)regs
+>collect $bt
+>end
 $current_task_user is a special trace state variable that it is value will be true when current task is in user mode.
-$current is a special trace state variable that if the action of an tracepoint collect it, this tracepint will collect the values of the registers and the memory of current task.
 With these two trace state variables, you can use KGTP collect the stack(backtrace) of current task.
 Following example show how we do backtrace(stack dump) from user space to Linux kernel:
 

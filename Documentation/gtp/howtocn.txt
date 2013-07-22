@@ -3,7 +3,7 @@
 		By Hui Zhu <teawater@gmail.com>
 		https://code.google.com/p/kgtp/wiki/HOWTOCN
 
-Update in 2013-05-08
+Update in 2013-06-26
 
 什么是KGTP
 需要帮助或者汇报问题
@@ -11,15 +11,21 @@ GDB调试普通程序和KGTP的区别表
 使用KGTP前的准备工作
 Linux内核
 如果你的系统内核是自己编译的
+如果是Android内核
 如果你的系统内核是发行版自带的
 Ubuntu
+安装Linux内核调试镜像的标准方法
+安装Linux内核调试镜像的第二方法
+安装内核头文件包
+安装内核源码
 Fedora
+安装Linux内核调试镜像
+安装Linux内核开发包
 其他系统
 确定Linux内核调试镜像是正确的
 当前Linux内核调试镜像在哪
 使用/proc/kallsyms
 使用linux_banner
-处理不能在"/sys/"或者"/sys/kernel/debug/"找到任何文件的问题
 处理Linux内核调试镜像地址信息和Linux内核执行时不同的问题
 取得KGTP
 通过http下载KGTP
@@ -32,14 +38,21 @@ Fedora
 和DKMS一起使用KGTP
 使用KGTP Linux内核patch
 安装可以和KGTP一起使用的GDB
-如何使用
-执行
+如何让GDB连接KGTP
+普通Linux
+安装KGTP模块
+处理找不到"/sys/kernel/debug/gtp"的问题
 让GDB连接到KGTP
 GDB在本地主机上
 如果GDB在远程主机上
+Android
+安装KGTP模块
+处理找不到"/sys/kernel/debug/gtp"的问题
+GDB连接KGTP
 增加模块的符号信息到GDB
-如何使用getmod.py
 如何使用getmod
+如何使用getmod.py
+如何使用GDB控制KGTP跟踪和调试Linux内核
 在普通模式直接访问当前值
 Linux内核的内存
 用户程序的内存
@@ -71,6 +84,8 @@ kprobes-optimization和tracepoint的执行速度
 普通trace状态变量
 Per_cpu trace状态变量
 如何定义
+本地CPU变量
+CPU id变量
 例子1
 例子2
 特殊trace状态变量 $current_task，$current_task_pid，$current_thread_info，$cpu_id，$dump_stack，$printk_level，$printk_format，$printk_tmp，$clock，$hardirq_count，$softirq_count 和 $irq_count
@@ -94,6 +109,7 @@ watch tracepoint的trace状态变量
 读while-stepping的traceframe
 如何显示被优化掉的变量值
 升级你的GCC
+通过分析汇编代码取得访问被优化掉变量的方法
 如何取得函数指针指向的函数
 如果函数指针没有被优化掉
 如果函数指针被优化掉了
@@ -118,7 +134,7 @@ perf event的类型和配置
 用$p_pe_en打开和关闭一个CPU上所有的perf event
 用来帮助设置和取得perf event trace状态变量的GDB脚本
 什么是KGTP
-KGTP 是一个 灵活 轻量级 实时 Linux 调试器 和 跟踪器 。
+KGTP 是一个 灵活，轻量级，实时 Linux (包括 Android) 调试器 和 跟踪器 。
 使用KGTP 不需要 在Linux内核上打PATCH或者重新编译，只要编译KGTP模块并insmod就可以。
 
 其让Linux内核提供一个远程GDB调试接口，于是在本地或者远程的主机上的GDB可以在不需要停止内核的情况下用GDB tracepoint和其他一些功能 调试 和 跟踪 Linux内核和应用程序。
@@ -126,7 +142,6 @@ KGTP 是一个 灵活 轻量级 实时 Linux 调试器 和 跟踪器 。
 
 KGTP支持 X86-32 ， X86-64 ， MIPS 和 ARM 。
 KGTP在Linux内核 2.6.18到upstream 上都被测试过。
-而且还可以用在 Android 上 （见 HowToUseKGTPinAndroid）。
 
 KGTP新用户可以去看一下 Quickstart 。
 
@@ -141,7 +156,7 @@ GDB调试普通程序和KGTP的区别表
 
 功能	GDB调试普通程序	GDB控制KGTP调试Linux内核
 准备工作	 系统里安装了GDB。
-程序用 "-g"选项编译。	 因为使用了一些GDB中的新功能，所以KGTP需要和GDB 7.3或者更新的版本。如果你的系统不提供这么新版本的GDB，你可以到http://code.google.com/p/gdbt/取得新版本GDB的静态编译版本，它可以在大部分Linux上使用。同时你可以在这里取得一步一步编译新版本GDB的介绍。
+程序用 "-g"选项编译。	 因为使用了一些GDB中的新功能，所以KGTP需要和GDB 7.6或者更新的版本。如果你的系统不提供这么新版本的GDB，你可以到http://code.google.com/p/gdbt/取得新版本GDB。同时你可以在这里取得一步一步编译新版本GDB的介绍。
 你还需要做一些Linux内核和KGTP的准备工作，请到 http://code.google.com/p/kgtp/wiki/HOWTOCN#使用KGTP前的准备工作 取得如果做的介绍。
 Attach	 使用命令"gdb -p pid"或者GDB命令"attach pid"可以attach系统中的某个程序.	 需要先insmod gtp.ko，请看 https://code.google.com/p/kgtp/wiki/HOWTOCN#执行。
 然后让GDB连接KGTP,请看https://code.google.com/p/kgtp/wiki/HOWTOCN#让GDB连接到KGTP。
@@ -167,11 +182,25 @@ General setup  --->
 Kernel hacking  --->
         [*] Debug Filesystem
         [*] Compile the kernel with debug info
+如果你改了Linux内核config的任何项目，请重新编译你的内核。
+
+如果是Android内核
+默认的Android Linux内核config应该不支持KGTP。要使用KGTP，你需要打开下面这些内核选项：
+
+[*] Enable loadable module support  --->
+General setup  ---> 
+        [*] Prompt for development and/or incomplete code/drivers
+        [*] Kprobes
+Kernel hacking  --->
+        [*] Debug Filesystem
+        [*] Compile the kernel with debug info
+如果你改了Linux内核config的任何项目，请重新编译你的内核。
+
 如果你的系统内核是发行版自带的
 你需要安装一些Linux内核软件包。
 
 Ubuntu
-安装Linux内核调试镜像
+安装Linux内核调试镜像的标准方法
 1) 增加调试源到Ubuntu源列表。
 
 在命令行按照下面的命令创建文件 /etc/apt/sources.list.d/ddebs.list：
@@ -193,6 +222,13 @@ sudo apt-get install linux-image-$(uname -r)-dbgsym
 于是你可以在"/usr/lib/debug/boot/vmlinux-$(uname -r)"找到内核调试镜像。
 请 注意 当内核更新的时候这一步 安装Linux内核调试镜像 需要再做一次。
 
+安装Linux内核调试镜像的第二方法
+如果用标准方法出现问题，请用下面这些命令安装Linux内核调试镜像。
+
+wget http://ddebs.ubuntu.com/pool/main/l/linux/linux-image-$(uname -r)-dbgsym_$(dpkg -s linux-image-$(uname -r) | grep ^Version: | sed 's/Version: //')_$(uname -i | sed 's/x86_64/amd64/').ddeb
+sudo dpkg -i linux-image-$(uname -r)-dbgsym_$(dpkg -s linux-image-$(uname -r) | grep ^Version: | sed 's/Version: //')_$(uname -i | sed 's/x86_64/amd64/').ddeb
+请 注意 当内核更新的时候这个方法需要重新做一次。
+
 安装内核头文件包
 sudo apt-get install linux-headers-generic
 安装内核源码
@@ -207,11 +243,18 @@ sudo mv /build/buildd/linux-source-$(uname -r | sed 's/-.*//') /build/buildd/lin
 
 Fedora
 安装Linux内核调试镜像
+使用下面的命令：
+
+sudo debuginfo-install kernel
+或者：
+
 sudo yum --enablerepo=fedora-debuginfo install kernel-debuginfo
 于是你可以在"/usr/lib/debug/lib/modules/$(uname -r)/vmlinux"找到内核调试镜像。
 
 安装Linux内核开发包
 sudo yum install kernel-devel-$(uname -r)
+请 注意 在升级过内核包之后，你可能需要重新调用这个命令。
+
 其他系统
 需要安装Linux内核调试镜像和Linux内核源码包。
 
@@ -257,21 +300,6 @@ Remote debugging using /sys/kernel/debug/gtp
 $2 = "Linux version 3.4.0-rc4+ (teawater@teawater-Precision-M4600) (gcc version 4.6.3 (GCC) ) #3 SMP Tue Apr 24 13:29:05 CST 2012\n"
 这个linux_banner是KGTP正在trace的内核的内核信息，如果相同，则Linux内核调试镜像是正确的。
 
-处理不能在"/sys/"或者"/sys/kernel/debug/"找到任何文件的问题
-因为KGTP的接口是"/sys/kernel/debug/gtp"，所以如果"/sys/"或者"/sys/kernel/debug/"中找不到任何文件则KGTP将不能使用。
-
-如果你有这个问题，请先确定你的内核config打开了"Debug Filesystem"。http://code.google.com/p/kgtp/wiki/HOWTOCN#如果你的系统内核是自己编译的
-
-如果它以及被打开了，请用下面命令mount sysfs。
-
-sudo mount -t sysfs none /sys/
-然后你就能在"/sys/"找到文件。 
-
-请用下面命令mount debugfs。
-
-mount -t debugfs none /sys/kernel/debug/
-然后你就能在"/sys/kernel/debug/"找到文件。 
-
 处理Linux内核调试镜像地址信息和Linux内核执行时不同的问题
 在X86_32上，用 http://code.google.com/p/kgtp/wiki/HOWTOCN#确定Linux内核调试镜像是正确的 介绍的方法发现Linux内核调试镜像地址信息和Linux内核执行时不同，而且确定使用的Linux内核调试镜像是正确的。
 这个问题是因为：
@@ -289,7 +317,11 @@ Processor type and features  --->
 请到 http://code.google.com/p/kgtp/downloads/list 或者 UPDATE 去下载源码包。
 
 通过svn下载KGTP
-有些人访问KGTP站点有问题，你可以通过svn访问KGTP。
+下面的命令将让你取得KGTP最后的发布版本：
+
+svn checkout http://kgtp.googlecode.com/svn/tags/kgtp/
+
+下面的命令将让你取得KGTP所有的文件：
 
 svn checkout http://kgtp.googlecode.com/svn/ kgtp-read-only
 kgtp-read-only/tags/ 这里是KGTP每个发布的版本。
@@ -318,7 +350,9 @@ KERNELDIR 设置为 /home/teawater/kernel/bamd64。 Compiler 设置为 x86_64-gl
 cd kgtp/
 make
 在一些编译环境中(例如Android)将出现一些编译应用程序getmod或者getframe的错误。请忽略这些错误并使用目录中的gtp.ko。
+如果你在Fedora上得到出错信息"/usr/bin/ld: cannot find -lc"，请用下面的命令处理其。
 
+sudo yum install glibc-static
 用一些特殊选项编译KGTP
 大部分时候，KGTP可以自动选择正确的参数和和各种版本的Linux内核一起编译。
 但是如果你想配置一些特殊选项，可以按照下面的介绍来做：
@@ -364,11 +398,15 @@ gtp_2.6.33_to_2.6.38.patch 是给Linux kernel 从2.6.33到2.6.38的patch。
 gtp_2.6.20_to_2.6.32.patch 是给Linux kernel 从2.6.20到2.6.32的patch。
 gtp_older_to_2.6.19.patch 是给Linux kernel 2.6.19以及更早版本的patch。
 安装可以和KGTP一起使用的GDB
-早于7.3版本的GDB的tracepoint功能有一些bug，而且还有一些功能做的不是很好。
-所以如果你的GDB小于7.3请到 https://code.google.com/p/gdbt/ 去安装可以和KGTP一起使用的GDB。 如果你有GDB的问题，请根据这里的信息http://code.google.com/p/kgtp/wiki/HOWTOCN#需要帮助或者汇报问题取得帮助。
+早于7.6版本的GDB的tracepoint功能有一些bug，而且还有一些功能做的不是很好。
+所以如果你的GDB小于7.6请到 https://code.google.com/p/gdbt/ 去安装可以和KGTP一起使用的GDB。这里提供UBUBTU, CentOS, Fedora, Mandriva, RHEL, SLE, openSUSE源。其他系统还可以下载静态编译版本。
+如果你有GDB的问题，请根据这里的信息http://code.google.com/p/kgtp/wiki/HOWTOCN#需要帮助或者汇报问题取得帮助。
 
-如何使用
-执行
+如何让GDB连接KGTP
+要使用KGTP的功能需要先让GDB连接到KGTP上。
+
+普通Linux
+安装KGTP模块
 如果你已经安装了KGTP在你的系统中，你可以：
 
 sudo modprobe gtp
@@ -376,6 +414,17 @@ sudo modprobe gtp
 
 cd kgtp/
 sudo insmod gtp.ko
+处理找不到"/sys/kernel/debug/gtp"的问题
+如果你有这个问题，请先确定你的内核config打开了"Debug Filesystem"。http://code.google.com/p/kgtp/wiki/HOWTOCN#如果你的系统内核是自己编译的
+如果它以及被打开了，请用下面命令mount sysfs。
+
+sudo mount -t sysfs none /sys/
+也许你可能会得到一些错误例如"sysfs is already mounted on /sys"，请忽略他们。 
+请用下面命令mount debugfs。
+
+mount -t debugfs none /sys/kernel/debug/
+然后你就找到"/sys/kernel/debug/gtp"。
+
 让GDB连接到KGTP
 请 注意 让GDB打开正确的vmlinux文件非常重要。请到 http://code.google.com/p/kgtp/wiki/HOWTOCN#确定Linux内核调试镜像是正确的 去看下如何做。
 
@@ -387,33 +436,66 @@ Remote debugging using /sys/kernel/debug/gtp
 然后你就可以用GDB命令调试和跟踪Linux内核了。
 
 如果GDB在远程主机上
-#在当前主机打开KGTP
+用nc把KGTP接口映射到端口1024上。
+
 sudo su
 nc -l 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp
-(nc -l -p 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp for old version netcat.)
-#让GDB连接1234端口
-gdb ./vmlinux
+#(nc -l -p 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp 给老版本的nc)
+之后，nc会在那里等待连接。
+让GDB连接1234端口。
+
+gdb-release ./vmlinux
 (gdb) target remote xxx.xxx.xxx.xxx:1234
+然后你就可以用GDB命令调试和跟踪Linux内核了。
+
+Android
+这个视频介绍了使用GDB连接Android上KGTP的过程，可访问 http://www.tudou.com/programs/view/qCumSPhByFI/ 或者 http://youtu.be/9YMpAvsl37I 进行观看。
+
+安装KGTP模块
+第一步 确定ADB已经连接到Android上。
+第二步 拷贝KGTP模块到Android上。
+
+sudo adb push gtp.ko /
+目录 "/" 可能是只读的。你可以选择其他目录或者用命令"sudo adb shell mount -o rw,remount /"把这个目录remount为可写。
+第三步 安装KGTP模块。
+
+adb shell insmod /gtp.ko
+处理找不到"/sys/kernel/debug/gtp"的问题
+如果你有这个问题，请先确定你的内核config打开了"Debug Filesystem"。http://code.google.com/p/kgtp/wiki/HOWTOCN#如果你的系统内核是自己编译的
+如果它以及被打开了，请用下面命令mount sysfs。
+
+sudo adb shell mount -t sysfs none /sys/
+也许你可能会得到一些错误例如"Device or resource busy"，请忽略他们。 
+请用下面命令mount debugfs。
+
+sudo adb shell mount -t debugfs none /sys/kernel/debug/
+然后你就找到"/sys/kernel/debug/gtp"。
+
+GDB连接KGTP
+用nc将KGTP接口映射到1024端口上。
+
+adb forward tcp:1234 tcp:1234
+adb shell "nc -l -p 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp"
+#(adb shell "nc -l 1234 </sys/kernel/debug/gtp >/sys/kernel/debug/gtp" 给新版本的nc)
+之后，nc会在那里等待连接。
+让GDB连接1234端口。
+
+gdb-release ./vmlinux
+(gdb) target remote :1234
 然后你就可以用GDB命令调试和跟踪Linux内核了。
 
 增加模块的符号信息到GDB
 有时你需要添加一个Linux内核模块的符号信息到GDB好调试其。
 手动增加符号信息不太容易，所以KGTP包里包含了GDB Python脚本"getmod.py"和程序"getmod"可以帮到你。
 
-如何使用getmod.py
-在使用getmod.py前连接到KGTP。
-
-(gdb) source ~/kgtp/getmod.py
-于是这个脚本将自动装载Linux内核模块到GDB中。
-
 如何使用getmod
 "getmod" 是用C写的所以你可以把它用在任何地方即使是一个嵌入式环境。
 例如：
 
-#下面的命令将把Linux内核模块信息以GDB命令的格式保存到文件~/tmp/mi。
-sudo getmod >~/tmp/mi
+#下面的命令将把Linux内核模块信息以GDB命令的格式保存到文件/tmp/mi。
+sudo getmod >/tmp/mi
 #在GDB那边：
-(gdb) source ~/tmp/mi
+(gdb) source /tmp/mi
 add symbol table from file "/lib/modules/2.6.39-rc5+/kernel/fs/nls/nls_iso8859-1.ko" at
         .text_addr = 0xf80de000
         .note.gnu.build-id_addr = 0xf80de088
@@ -430,6 +512,14 @@ add symbol table from file "/lib/modules/2.6.39-rc5+/kernel/fs/nls/nls_iso8859-1
 
 #/home/teawater/kernel/b26是GDB所在主机上内核模块所在的路径
 sudo ./getmod -r /home/teawater/kernel/b26 >~/tmp/mi
+如何使用getmod.py
+请 注意 https://code.google.com/p/gdbt/下载的静态编译GDB不能使用getmod.py。
+在使用getmod.py前连接到KGTP。
+
+(gdb) source ~/kgtp/getmod.py
+于是这个脚本将自动装载Linux内核模块到GDB中。
+
+如何使用GDB控制KGTP跟踪和调试Linux内核
 在普通模式直接访问当前值
 在GDB连到KGTP上以后，如果没有用GDB命令"tfind"选择一条trace帧缓存里面的条目，GDB就处于 普通模式。于是你可以直接访问内存(Linux内核或者用户程序)的值和trace状态变量的值。
 如果你选择了一个trace帧条目，可以用GDB命令"tfind -1"返回到普通模式。请到http://code.google.com/p/kgtp/wiki/HOWTOCN#用tfind选择trace帧缓存里面的条目取得GDB命令"tfind"的更多信息。
@@ -1181,7 +1271,8 @@ $watch_stop	 设置地址到$watch_stop将让一个watch这个地址的动态wat
 $watch_trace_num	 不支持	 不支持	 不支持	 不支持	 不支持	 设置这个动态watch tracepoint的tracepoint的号码。
 $watch_trace_addr	 不支持	 不支持	 不支持	 不支持	 不支持	 设置这个动态watch tracepoint的tracepoint的地址。
 $watch_addr	 不支持	 不支持	 不支持	 这个watch tracepoint监视的地址。	 不支持	 这个watch tracepoint监视的地址。
-$watch_val	 不支持	 不支持	 不支持	 这个watch tracepoint监视的内存的值。	 不支持	 这个watch tracepoint监视的内存的值。
+$watch_val	 不支持	 不支持	 不支持	 这个watch tracepoint监视的内存的当前值。	 不支持	 这个watch tracepoint监视的内存的当前值。
+$watch_prev_val	 不支持	 不支持	 不支持	 这个watch tracepoint监视的内存的修改前值。	 不支持	 这个watch tracepoint监视的内存的修改前值。
 $watch_count	 不支持	 不支持	 不支持	 不支持	 不支持	 这个watch tracepoint会话的一个特殊计数ID。
 静态watch tracepoint
 当你要监视全局变量或者可以取得地址的变量的值的时候，你可以使用静态watch tracepoint。下面是一个监视jiffies_64写的例子:
@@ -1195,6 +1286,7 @@ trace *&jiffies_64
     teval $watch_type=1
     teval $watch_size=8
     collect $watch_val
+    collect $watch_prev_val
     collect $bt
   end
 动态watch tracepoint
@@ -1208,6 +1300,7 @@ trace *1
     collect $bt
     collect $watch_addr
     collect $watch_val
+    collect $watch_prev_val
   end
 定义了一个动态watch tracepoint。地址"1"并不是其要监视的地址。其将帮助tracepoint来找到这个动态watch tracepoint。
 
@@ -1231,6 +1324,7 @@ trace file_sb_list_del
 
 使用while-stepping让Linux内核做单步
 请 注意 while-stepping现在只有X86和X86_64支持。
+介绍使用while-stepping的视频 http://www.codepark.us/a/12。
 
 如何使用 while-stepping
 while-stepping 是一种可以包含actions的特殊tracepoint action。
@@ -1312,6 +1406,109 @@ res has been optimized out of existence.
 升级你的GCC
 VTA branch http://gcc.gnu.org/wiki/Var_Tracking_Assignments 已经整合进GCC 4.5，其可以帮助生成之前被标记为"optimized out"的值的调试信息。
 
+通过分析汇编代码取得访问被优化掉变量的方法
+即使升级了GCC，你可能还会遇到问题。主要原因是数据在寄存器中但是GCC没有把信息放到调试信息中。所以GDB只能显示这个变量被又优化掉了。
+但你可以通过分析汇编代码取得这个变量在哪并在tracepoint actions中访问其。
+下面是一个在函数get_empty_filp中寻找变量"f"并在tracepoint actions中使用其的例子：
+我们想collect变量f的值，但是其已经被优化掉了。
+
+(gdb) list get_empty_filp
+...
+...
+...
+137             INIT_LIST_HEAD(&f->f_u.fu_list);
+138             atomic_long_set(&f->f_count, 1);
+139             rwlock_init(&f->f_owner.lock);
+140             spin_lock_init(&f->f_lock);
+141             eventpoll_init_file(f);
+(gdb) 
+142             /* f->f_version: 0 */
+143             return f;
+(gdb) trace 143
+Tracepoint 1 at 0xffffffff8119b30e: file fs/file_table.c, line 143.
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+>collect f
+`f' is optimized away and cannot be collected.
+现在用"disassemble /m"命令取得和"f"有关的汇编代码和源码并分析他们。
+
+(gdb) disassemble /m get_empty_filp
+...
+...
+...
+125             f = kmem_cache_zalloc(filp_cachep, GFP_KERNEL);
+126             if (unlikely(!f))
+   0xffffffff8119b28c <+92>:    test   %rax,%rax
+   0xffffffff8119b292 <+98>:    je     0xffffffff8119b362 <get_empty_filp+306>
+
+127                     return ERR_PTR(-ENOMEM);
+   0xffffffff8119b362 <+306>:   mov    $0xfffffffffffffff4,%rax
+   0xffffffff8119b369 <+313>:   jmp    0xffffffff8119b311 <get_empty_filp+225>
+因为"+98"到"+132"的代码因为属于inline函数所以没有在这里显示，但是你可以用"disassemble get_empty_filp"取得他们。
+
+   0xffffffff8119b287 <+87>:    callq  0xffffffff81181cb0 <kmem_cache_alloc>
+   0xffffffff8119b28c <+92>:    test   %rax,%rax
+   0xffffffff8119b28f <+95>:    mov    %rax,%rbx
+   0xffffffff8119b292 <+98>:    je     0xffffffff8119b362 <get_empty_filp+306>
+   0xffffffff8119b298 <+104>:   mov    0xb4d406(%rip),%edx        # 0xffffffff81ce86a4 <percpu_counter_batch>
+   0xffffffff8119b29e <+110>:   mov    $0x1,%esi
+   0xffffffff8119b2a3 <+115>:   mov    $0xffffffff81c05340,%rdi
+---Type <return> to continue, or q <return> to quit---
+   0xffffffff8119b2aa <+122>:   callq  0xffffffff8130dd20 <__percpu_counter_add>
+根据汇编代码你可以看到kmem_cache_alloc的返回值在$rax中，其的值被设置到了$rbx中。
+看起来$rbx有"f"的值，让我们看其他的汇编代码。
+
+128     
+129             percpu_counter_inc(&nr_files);
+130             f->f_cred = get_cred(cred);
+   0xffffffff8119b2b4 <+132>:   mov    %r12,0x70(%rbx)
+设置一个值到f的元素中。汇编代码是设置$r12的值到以$rbx为基础地址的内存中。其让$rbx看起来是"f"。
+
+131             error = security_file_alloc(f);
+   0xffffffff8119b2b8 <+136>:   mov    %rbx,%rdi
+   0xffffffff8119b2bb <+139>:   callq  0xffffffff8128ee30 <security_file_alloc>
+
+132             if (unlikely(error)) {
+   0xffffffff8119b2c0 <+144>:   test   %eax,%eax
+   0xffffffff8119b2c2 <+146>:   jne    0xffffffff8119b36b <get_empty_filp+315>
+---Type <return> to continue, or q <return> to quit---
+
+133                     file_free(f);
+134                     return ERR_PTR(error);
+   0xffffffff8119b393 <+355>:   movslq -0x14(%rbp),%rax
+   0xffffffff8119b397 <+359>:   jmpq   0xffffffff8119b311 <get_empty_filp+225>
+
+135             }
+136     
+137             INIT_LIST_HEAD(&f->f_u.fu_list);
+138             atomic_long_set(&f->f_count, 1);
+139             rwlock_init(&f->f_owner.lock);
+   0xffffffff8119b2e4 <+180>:   movl   $0x100000,0x50(%rbx)
+
+140             spin_lock_init(&f->f_lock);
+   0xffffffff8119b2c8 <+152>:   xor    %eax,%eax
+   0xffffffff8119b2d1 <+161>:   mov    %ax,0x30(%rbx)
+
+141             eventpoll_init_file(f);
+142             /* f->f_version: 0 */
+143             return f;
+   0xffffffff8119b30e <+222>:   mov    %rbx,%rax
+在检查了其他汇编代码后，你可以确定$rbx就是"f"。
+于是你可以在tracepoint actions中通过访问$rbx而访问"f"，例如：
+
+(gdb) trace 143
+Tracepoint 1 at 0xffffffff8119b30e: file fs/file_table.c, line 143.
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+#collect f
+>collect $rbx
+#collect *f
+>collect *((struct file *)$rbx)
+#collect f->f_op
+>collect ((struct file *)$rbx)->f_op
+>end
 如何取得函数指针指向的函数
 如果函数指针没有被优化掉
 你可以直接collect这个指针，例如：
@@ -1462,8 +1659,24 @@ Usage: ./getframe [option]
 KGTP可以不同停止应用层程序的情况下直接读取其内存，请到http://code.google.com/p/kgtp/wiki/HOWTOCN#用户程序的内存取得如何做。
 
 在tracepoint收集用户层程序的栈信息(可用来做backtrace)
+$current 是一个特殊trace状态变量。当一个tracepoint的action 访问其的时候，tracepoint将收集当前task的寄存器和内存值而不是内核中的值。
+一般来说，tracepoint通过 task_pt_regs 取得寄存器的值。于是在tracepoint actions中collect $current 将让tracepoint访问当前task。例如：
+
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+>collect $current
+>collect $bt
+>end
+此外，针对一些参数中包含指向当前TASK寄存器指针的特殊函数(例如：X86的do_IRQ函数)，tracepoint需要从函数的参数中取得寄存器信息。则设置指针到 $current 将让tracepoint得到其。例如：
+
+(gdb) actions 
+Enter actions for tracepoint 1, one per line.
+End with a line saying just "end".
+>teval $current=(uint64_t)regs
+>collect $bt
+>end
 $current_task_user 是一个特殊trace状态变量。当current task 在user模式的时候，其的值为真。
-$current 是一个特殊trace状态变量。当一个tracepoint的action collect其的时候，tracepoint将收集current task的寄存器和内存值。
 用这两个trace状态变量，就可以用KGTP收集用户层程序的栈信息(可用来做backtrace)。
 下面这个例子显示如何从用户层到Linux内核层做backtrace(stack dump)：
 
