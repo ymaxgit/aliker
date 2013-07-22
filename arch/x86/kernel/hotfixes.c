@@ -69,6 +69,7 @@ EXPORT_SYMBOL(ali_get_symbol_address_list);
 static void try_to_create_orig_stub(struct ali_hotfix *h)
 {
 	unsigned char *addr = h->addr;
+	unsigned char *stub;
 	int len = 0;
 	s32 offset;
 
@@ -106,21 +107,22 @@ static void try_to_create_orig_stub(struct ali_hotfix *h)
 			goto out;
 	};
 
-	h->orig_stub = my_module_alloc(PAGE_SIZE);
-	if (!h->orig_stub)
+	stub = my_module_alloc(PAGE_SIZE);
+	if (!stub)
 		return;
-	memcpy(h->orig_stub, h->addr, len);
 
+	memcpy(stub, h->addr, len);
 	offset = (s32)((long)h->addr + len
-				- ((long)h->orig_stub + len)
+				- ((long)stub + len)
 				- RELATIVEJUMP_SIZE);
 
-	h->orig_stub[len] = RELATIVEJUMP_OPCODE;
-	(*(s32 *)(&h->orig_stub[len+1])) = offset;
+	stub[len] = RELATIVEJUMP_OPCODE;
+	(*(s32 *)(&stub[len+1])) = offset;
+	h->orig_stub = stub;
+
+	return;
 
 out:
-	if (h->orig_stub)
-		return;
 	{
 		int i;
 
