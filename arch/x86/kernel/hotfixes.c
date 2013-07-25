@@ -90,6 +90,10 @@ static void try_to_create_orig_stub(struct ali_hotfix *h)
 				/* sub    $0xHH,%rsp */
 				addr += 4; /* and an extra offset byte */
 				len += 4;
+			} else if (addr[1] == 0x81 && addr[2] == 0xec) {
+				/* sub    $0xHHHHHHHH, %rsp */
+				addr += 7;
+				len += 7;
 			} else
 				goto out;
 			break;
