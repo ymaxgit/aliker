@@ -360,6 +360,9 @@ static inline struct request_list *blk_get_rl(struct request_queue *q,
 	if (blkcg == &blkio_root_cgroup)
 		goto root_rl;
 
+	if (test_bit(QUEUE_FLAG_ELVSWITCH, &q->queue_flags))
+		goto root_rl;
+
 	/*
 	 * Try to use blkg->rl.  blkg lookup may fail under memory pressure
 	 * or if either the blkcg or queue is going away.  Fall back to

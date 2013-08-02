@@ -277,6 +277,7 @@ void blk_drain_queue(struct request_queue *q, bool drain_all)
 		__blk_run_queue(q);
 
 		drain |= q->nr_rqs_elvpriv;
+		drain |= q->request_fn_active;
 
 		/*
 		 * Unfortunately, requests are queued at and tracked from
@@ -310,7 +311,9 @@ void __generic_unplug_device(struct request_queue *q)
 	if (!blk_remove_plug(q) && !blk_queue_nonrot(q))
 		return;
 
+	q->request_fn_active++;
 	q->request_fn(q);
+	q->request_fn_active--;
 }
 
 /**
@@ -457,7 +460,9 @@ void __blk_run_queue(struct request_queue *q)
 	if (elv_queue_empty(q))
 		return;
 
+	q->request_fn_active++;
 	q->request_fn(q);
+	q->request_fn_active--;
 }
 EXPORT_SYMBOL(__blk_run_queue);
 
@@ -1047,6 +1052,8 @@ static struct request *get_request_wait(struct request_queue *q, int rw_flags,
 		spin_lock_irq(q->queue_lock);
 		finish_wait(&rl->wait[is_sync], &wait);
 
+		/* transferred to @rq on success */
+		rl = blk_get_rl(q, bio);
 		rq = get_request(rl, rw_flags, bio, GFP_NOIO);
 	};
 
