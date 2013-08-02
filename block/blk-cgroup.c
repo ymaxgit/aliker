@@ -885,11 +885,11 @@ out:
 }
 
 unsigned int blkcg_get_weight(struct blkio_cgroup *blkcg,
-			      dev_t dev)
+			      dev_t dev, enum blkio_policy_id plid)
 {
 	struct blkio_policy_node *pn;
 
-	pn = blkio_policy_search_node(blkcg, dev, BLKIO_POLICY_PROP,
+	pn = blkio_policy_search_node(blkcg, dev, plid,
 				BLKIO_PROP_weight_device);
 	if (pn)
 		return pn->val.weight;

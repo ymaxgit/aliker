@@ -533,7 +533,7 @@ tpps_find_tppg(struct tpps_data *tppd, struct blkio_cgroup *blkcg)
 		tppg = &tppd->root_group;
 	else
 		tppg = tppg_of_blkg(blkiocg_lookup_group(blkcg, tppd->queue,
-							 BLKIO_POLICY_PROP));
+							 BLKIO_POLICY_TPPS));
 
 	if (tppg && !tppg->blkg.dev && bdi->dev && dev_name(bdi->dev)) {
 		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
@@ -593,13 +593,14 @@ static void tpps_init_add_tppg_lists(struct tpps_data *tppd,
 		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
 		blkiocg_add_blkio_group(blkcg, &tppg->blkg,
 					tppd->queue, MKDEV(major, minor),
-					BLKIO_POLICY_PROP);
+					BLKIO_POLICY_TPPS);
 	} else
 		blkiocg_add_blkio_group(blkcg, &tppg->blkg,
-					tppd->queue, 0, BLKIO_POLICY_PROP);
+					tppd->queue, 0, BLKIO_POLICY_TPPS);
 
 	tppd->nr_blkcg_linked_grps++;
-	tppg->weight = blkcg_get_weight(blkcg, tppg->blkg.dev);
+	tppg->weight = blkcg_get_weight(blkcg, tppg->blkg.dev,
+			BLKIO_POLICY_TPPS);
 
 	/* Add group on tppd list */
 	list_add(&tppg->tppd_node, &tppd->group_list);
@@ -915,6 +916,7 @@ static int tpps_dispatch_requests_nr(struct tpps_data *tppd,
 		}
 	} while (ret && cnt < count);
 
+	tpps_log_tppq(tppd, tppq, "count:%d %d", cnt, tppq->rq_queued);
 	return cnt;
 }
 
@@ -971,7 +973,7 @@ static int tpps_dispatch_requests(struct request_queue *q, int force)
 			continue;
 		tpps_update_group_weight(tppg);
 		grp_quota = (quota * tppg->weight / tppd->total_weight) -
-						tppg->rq_in_driver;
+				tppg->rq_in_driver;
 		if (grp_quota <= 0)
 			continue;
 		tpps_log_tppg(tppd, tppg,
@@ -1042,7 +1044,7 @@ static void *tpps_init_queue(struct request_queue *q)
 	rcu_read_lock();
 
 	blkiocg_add_blkio_group(&blkio_root_cgroup, &tppg->blkg,
-					tppd->queue, 0, BLKIO_POLICY_PROP);
+					tppd->queue, 0, BLKIO_POLICY_TPPS);
 	rcu_read_unlock();
 	tppd->nr_blkcg_linked_grps++;
 
@@ -1256,7 +1258,7 @@ static struct blkio_policy_type blkio_policy_tpps = {
 		.blkio_unlink_group_fn = tpps_unlink_blkio_group,
 		.blkio_update_group_weight_fn =	tpps_update_blkio_group_weight,
 	},
-	.plid = BLKIO_POLICY_PROP,
+	.plid = BLKIO_POLICY_TPPS,
 };
 
 static void tpps_slab_kill(void)

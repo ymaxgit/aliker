@@ -1023,7 +1023,8 @@ static void cfq_init_add_cfqg_lists(struct cfq_data *cfqd,
 					cfqd->queue, 0);
 
 	cfqd->nr_blkcg_linked_grps++;
-	cfqg->weight = blkcg_get_weight(blkcg, cfqg->blkg.dev);
+	cfqg->weight = blkcg_get_weight(blkcg, cfqg->blkg.dev,
+			BLKIO_POLICY_PROP);
 
 	/* Add group on cfqd list */
 	hlist_add_head(&cfqg->cfqd_node, &cfqd->cfqg_list);
