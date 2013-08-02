@@ -568,12 +568,14 @@ int blk_init_rl(struct request_list *rl, struct request_queue *q,
 
 	return 0;
 }
+EXPORT_SYMBOL(blk_init_rl);
 
 void blk_exit_rl(struct request_list *rl)
 {
 	if (rl->rq_pool)
 		mempool_destroy(rl->rq_pool);
 }
+EXPORT_SYMBOL(blk_exit_rl);
 
 struct request_queue *blk_alloc_queue(gfp_t gfp_mask)
 {

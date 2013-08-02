@@ -54,6 +54,24 @@ struct cfq_io_context {
 	struct rcu_head rcu_head;
 };
 
+struct tpps_queue;
+struct tpps_io_context {
+	void *key;
+	unsigned long dead_key;
+
+	struct tpps_queue *tppq;
+
+	struct io_context *ioc;
+
+	struct list_head queue_list;
+	struct hlist_node tic_list;
+
+	void (*dtor)(struct io_context *); /* destructor */
+	void (*exit)(struct io_context *); /* called on task exit */
+
+	struct rcu_head rcu_head;
+};
+
 /*
  * I/O subsystem state of the associated processes.  It is refcounted
  * and kmalloc'ed. These could be shared between processes.
@@ -81,6 +99,7 @@ struct io_context {
 	struct as_io_context *aic;
 	struct radix_tree_root radix_root;
 	struct hlist_head cic_list;
+	struct hlist_head tic_list;
 	void *ioc_data;
 };
 

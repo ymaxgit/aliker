@@ -31,6 +31,17 @@ config IOSCHED_DEADLINE
 	  a disk at any one time, its behaviour is almost identical to the
 	  anticipatory I/O scheduler and so is a good choice.
 
+config IOSCHED_TPPS
+	tristate "TPPS I/O scheduler"
+	# If BLK_CGROUP is a module, TPPS has to be built as module.
+	depends on (BLK_CGROUP=m && m) || !BLK_CGROUP || BLK_CGROUP=y
+	default y
+	---help---
+	  The TPPS I/O scheduler tries to distribute iops proportional
+	  among all cgroups in the system. It should also provide a low
+	  latency working environment, suitable for flash-based device.
+	  Note: If BLK_CGROUP=m, then TPPS can be built only as module.
+
 config IOSCHED_CFQ
 	tristate "CFQ I/O scheduler"
 	# If BLK_CGROUP is a module, CFQ has to be built as module.
@@ -64,6 +75,9 @@ choice
 
 	config DEFAULT_DEADLINE
 		bool "Deadline" if IOSCHED_DEADLINE=y
+
+	config DEFAULT_TPPS
+		bool "Taobao Parallel Proportion" if IOSCHED_TPPS=y
 
 	config DEFAULT_CFQ
 		bool "CFQ" if IOSCHED_CFQ=y

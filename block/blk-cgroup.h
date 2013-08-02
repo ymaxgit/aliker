@@ -20,6 +20,7 @@
 enum blkio_policy_id {
 	BLKIO_POLICY_PROP = 0,		/* Proportional Bandwidth division */
 	BLKIO_POLICY_THROTL,		/* Throttling */
+	BLKIO_POLICY_TPPS,
 };
 
 /* Max limits for throttle policy */
