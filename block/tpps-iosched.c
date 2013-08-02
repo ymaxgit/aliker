@@ -969,14 +969,16 @@ static int tpps_dispatch_requests(struct request_queue *q, int force)
 	list_for_each_entry_safe(tppg, group_n, &tppd->group_list, tppd_node) {
 		if (!tppg->nr_tppq)
 			continue;
+		tpps_update_group_weight(tppg);
 		grp_quota = (quota * tppg->weight / tppd->total_weight) -
 						tppg->rq_in_driver;
 		if (grp_quota <= 0)
 			continue;
 		tpps_log_tppg(tppd, tppg,
-			"nr:%d, wt:%u total_wt:%u quota:%d grp_quota:%d",
+			"nr:%d, wt:%u total_wt:%u quota:%d "
+			"gp_quota:%d in_drv:%d queued:%d",
 			tppg->nr_tppq, tppg->weight, tppd->total_weight,
-			quota, grp_quota);
+			quota, grp_quota, tppg->rq_in_driver, tppg->rq_queued);
 		BUG_ON(tppg->queue_list.next == &tppg->queue_list);
 		if (!tppg->cur_dispatcher)
 			tppg->cur_dispatcher = tppg->queue_list.next;
