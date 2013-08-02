@@ -918,6 +918,35 @@ static int tpps_dispatch_requests_nr(struct tpps_data *tppd,
 	return cnt;
 }
 
+static int tpps_forced_dispatch(struct tpps_data *tppd)
+{
+	struct tpps_group *tppg, *group_n;
+	struct tpps_queue *tppq;
+	struct list_head *next;
+	int total = 0, ret;
+
+	list_for_each_entry_safe(tppg, group_n, &tppd->group_list, tppd_node) {
+		if (!tppg->nr_tppq)
+			continue;
+		tpps_log_tppg(tppd, tppg, "(force) nr:%d, wt:%u total_wt:%u",
+				tppg->nr_tppq, tppg->weight, tppd->total_weight)
+		BUG_ON(tppg->queue_list.next == &tppg->queue_list);
+		if (!tppg->cur_dispatcher)
+			tppg->cur_dispatcher = tppg->queue_list.next;
+		next = tppg->cur_dispatcher;
+		do {
+			tppq = list_entry(next, struct tpps_queue, tppg_node);
+			ret = tpps_dispatch_requests_nr(tppd, tppq, -1);
+			total += ret;
+			next = next->next;
+			if (next == &tppg->queue_list)
+				next = tppg->queue_list.next;
+			BUG_ON(tppg->cur_dispatcher == &tppg->queue_list);
+		} while (next != tppg->cur_dispatcher);
+	}
+	return total > 0;
+}
+
 static int tpps_dispatch_requests(struct request_queue *q, int force)
 {
 	struct tpps_data *tppd = q->elevator->elevator_data;
@@ -927,11 +956,14 @@ static int tpps_dispatch_requests(struct request_queue *q, int force)
 	int count = 0, total = 0, ret;
 	int quota, grp_quota;
 
+	if (unlikely(force))
+		return tpps_forced_dispatch(tppd);
+
 	if (!tppd->total_weight)
 		return 0;
 
 	quota = q->nr_requests - tppd->rq_in_driver;
-	if (quota < MIN_DISPATCH_RQ && !force)
+	if (quota < MIN_DISPATCH_RQ)
 		return 0;
 
 	list_for_each_entry_safe(tppg, group_n, &tppd->group_list, tppd_node) {
@@ -939,7 +971,7 @@ static int tpps_dispatch_requests(struct request_queue *q, int force)
 			continue;
 		grp_quota = (quota * tppg->weight / tppd->total_weight) -
 						tppg->rq_in_driver;
-		if (grp_quota <= 0 && !force)
+		if (grp_quota <= 0)
 			continue;
 		tpps_log_tppg(tppd, tppg,
 			"nr:%d, wt:%u total_wt:%u quota:%d grp_quota:%d",
@@ -952,10 +984,7 @@ static int tpps_dispatch_requests(struct request_queue *q, int force)
 		count = 0;
 		do {
 			tppq = list_entry(next, struct tpps_queue, tppg_node);
-			if (force)
-				ret = tpps_dispatch_requests_nr(tppd, tppq, -1);
-			else
-				ret = tpps_dispatch_requests_nr(tppd, tppq, 1);
+			ret = tpps_dispatch_requests_nr(tppd, tppq, 1);
 			count += ret;
 			total += ret;
 			next = next->next;
