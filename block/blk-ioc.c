@@ -126,9 +126,11 @@ struct io_context *alloc_io_context(gfp_t gfp_flags, int node)
 		ret->nr_batch_requests = 0; /* because this is 0 */
 		ret->aic = NULL;
 		INIT_RADIX_TREE(&ret->radix_root, GFP_ATOMIC | __GFP_HIGH);
+		INIT_RADIX_TREE(&ret->radix_tic_root, GFP_ATOMIC | __GFP_HIGH);
 		INIT_HLIST_HEAD(&ret->cic_list);
 		INIT_HLIST_HEAD(&ret->tic_list);
 		ret->ioc_data = NULL;
+		ret->tic_data = NULL;
 #if defined(CONFIG_BLK_CGROUP) || defined(CONFIG_BLK_CGROUP_MODULE)
 		ret->cgroup_changed = 0;
 #endif

@@ -136,9 +136,9 @@ tpps_drop_dead_tic(struct tpps_data *tppd, struct io_context *ioc,
 
 	spin_lock_irqsave(&ioc->lock, flags);
 
-	BUG_ON(ioc->ioc_data == tic);
+	BUG_ON(ioc->tic_data == tic);
 
-	radix_tree_delete(&ioc->radix_root, (unsigned long) tppd);
+	radix_tree_delete(&ioc->radix_tic_root, (unsigned long) tppd);
 	hlist_del_rcu(&tic->tic_list);
 	spin_unlock_irqrestore(&ioc->lock, flags);
 
@@ -160,14 +160,15 @@ tpps_tic_lookup(struct tpps_data *tppd, struct io_context *ioc)
 	/*
 	 * we maintain a last-hit cache, to avoid browsing over the tree
 	 */
-	tic = rcu_dereference(ioc->ioc_data);
+	tic = rcu_dereference(ioc->tic_data);
 	if (tic && tic->key == tppd) {
 		rcu_read_unlock();
 		return tic;
 	}
 
 	do {
-		tic = radix_tree_lookup(&ioc->radix_root, (unsigned long) tppd);
+		tic = radix_tree_lookup(&ioc->radix_tic_root,
+					(unsigned long) tppd);
 		rcu_read_unlock();
 		if (!tic)
 			break;
@@ -180,7 +181,7 @@ tpps_tic_lookup(struct tpps_data *tppd, struct io_context *ioc)
 		}
 
 		spin_lock_irqsave(&ioc->lock, flags);
-		rcu_assign_pointer(ioc->ioc_data, tic);
+		rcu_assign_pointer(ioc->tic_data, tic);
 		spin_unlock_irqrestore(&ioc->lock, flags);
 		break;
 	} while (1);
@@ -195,7 +196,7 @@ static void tic_free_func(struct io_context *ioc, struct tpps_io_context *tic)
 	BUG_ON(!tic->dead_key);
 
 	spin_lock_irqsave(&ioc->lock, flags);
-	radix_tree_delete(&ioc->radix_root, tic->dead_key);
+	radix_tree_delete(&ioc->radix_tic_root, tic->dead_key);
 	hlist_del_rcu(&tic->tic_list);
 	spin_unlock_irqrestore(&ioc->lock, flags);
 
@@ -324,9 +325,9 @@ static void __tpps_exit_single_io_context(struct tpps_data *tppd,
 	tic->dead_key = (unsigned long) tic->key;
 	tic->key = NULL;
 
-	if (rcu_dereference(ioc->ioc_data) == tic) {
+	if (rcu_dereference(ioc->tic_data) == tic) {
 		spin_lock(&ioc->lock);
-		rcu_assign_pointer(ioc->ioc_data, NULL);
+		rcu_assign_pointer(ioc->tic_data, NULL);
 		spin_unlock(&ioc->lock);
 	}
 
@@ -403,7 +404,7 @@ static int tpps_tic_link(struct tpps_data *tppd, struct io_context *ioc,
 		tic->key = tppd;
 
 		spin_lock_irqsave(&ioc->lock, flags);
-		ret = radix_tree_insert(&ioc->radix_root,
+		ret = radix_tree_insert(&ioc->radix_tic_root,
 						(unsigned long) tppd, tic);
 		if (!ret)
 			hlist_add_head_rcu(&tic->tic_list, &ioc->tic_list);

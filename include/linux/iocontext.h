@@ -98,9 +98,11 @@ struct io_context {
 
 	struct as_io_context *aic;
 	struct radix_tree_root radix_root;
+	struct radix_tree_root radix_tic_root;
 	struct hlist_head cic_list;
 	struct hlist_head tic_list;
 	void *ioc_data;
+	void *tic_data;
 };
 
 static inline struct io_context *ioc_task_link(struct io_context *ioc)
