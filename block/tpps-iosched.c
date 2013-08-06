@@ -275,6 +275,16 @@ static void tpps_del_queue(struct tpps_queue *tppq)
 		tppq->tppg = NULL;
 	}
 
+	if (tppg->nr_tppq < 1) {
+		printk(KERN_WARNING "tppg's ref: %d nr_tppq: %d "
+				"rq_queued: %d rq_in_driver: %d\n"
+				"tppq's pid: %d online: %d rq_queued: %d\n",
+				tppg->ref, tppg->nr_tppq, tppg->rq_queued,
+				tppg->rq_in_driver, tppq->pid, tppq->online,
+				tppq->rq_queued);
+		return;
+	}
+
 	BUG_ON(tppg->nr_tppq < 1);
 	tppg->nr_tppq--;
 	if (!tppg->nr_tppq)
@@ -306,7 +316,13 @@ static void tpps_put_queue(struct tpps_queue *tppq)
 	BUG_ON(!list_empty(&tppq->sort_list));
 	tppg = tppq->tppg;
 
-	tpps_del_queue(tppq);
+	/* Some requests only go through set_request() but not insert_request()
+	 * such as scsi_cmd which was passed in from scsi_ioctl() by
+	 * blk_execute_rq_nowait()
+	 */
+	if (tppq->online && !list_empty(&tppq->tppg_node))
+		tpps_del_queue(tppq);
+
 	kmem_cache_free(tpps_pool, tppq);
 	tpps_put_tppg(tppd, tppg);
 }
