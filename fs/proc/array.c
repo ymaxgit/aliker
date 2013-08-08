@@ -343,6 +343,15 @@ int proc_pid_status(struct seq_file *m, struct pid_namespace *ns,
 	return 0;
 }
 
+#ifdef CONFIG_CGROUP_CPUACCT
+extern bool task_in_nonroot_cpuacct(struct task_struct *);
+#else
+bool task_in_nonroot_cpuacct(struct task_struct *tsk)
+{
+        return false;
+}
+#endif
+
 static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 			struct pid *pid, struct task_struct *task, int whole)
 {
@@ -363,6 +372,9 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	unsigned long rsslim = 0;
 	char tcomm[sizeof(task->comm)];
 	unsigned long flags;
+	struct task_struct *init_tsk = NULL;
+	struct nsproxy *nsproxy = NULL;
+	struct pid_namespace *pid_ns = NULL;
 
 	state = *get_task_state(task);
 	vsize = eip = esp = 0;
@@ -445,6 +457,23 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	start_time =
 		(unsigned long long)task->real_start_time.tv_sec * NSEC_PER_SEC
 				+ task->real_start_time.tv_nsec;
+
+	/* while uptime in container is fixed to container start time, */
+	/* task start time need to be fixed too, or wrong */
+	/* starttime will show in ps */
+	nsproxy = task_nsproxy(current);
+	if (nsproxy &&
+	    in_noninit_pid_ns(nsproxy->pid_ns) &&
+	    task_in_nonroot_cpuacct(current)) {
+		pid_ns = nsproxy->pid_ns;
+		if (likely(pid_ns))
+			init_tsk = pid_ns->child_reaper;
+		if (likely(init_tsk))
+			start_time -=
+				(unsigned long long)init_tsk->start_time.tv_sec
+				* NSEC_PER_SEC + init_tsk->start_time.tv_nsec;
+	}
+
 	/* convert nsec -> ticks */
 	start_time = nsec_to_clock_t(start_time);
 
