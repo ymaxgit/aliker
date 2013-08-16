@@ -303,6 +303,7 @@ struct request_queue
 	struct elevator_queue	*elevator;
 	int			nr_rqs[2];	/* # allocated [a]sync rqs */
 	int			nr_rqs_elvpriv;	/* # allocated rqs w/ elvpriv */
+	int			request_fn_active;
 
 	/*
 	 * If blkcg is not used, @q->root_rl serves all requests.  If blkcg

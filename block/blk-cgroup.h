@@ -20,6 +20,7 @@
 enum blkio_policy_id {
 	BLKIO_POLICY_PROP = 0,		/* Proportional Bandwidth division */
 	BLKIO_POLICY_THROTL,		/* Throttling */
+	BLKIO_POLICY_TPPS,
 };
 
 /* Max limits for throttle policy */
@@ -193,7 +194,7 @@ struct blkio_policy_node {
 };
 
 extern unsigned int blkcg_get_weight(struct blkio_cgroup *blkcg,
-				     dev_t dev);
+				     dev_t dev, enum blkio_policy_id plid);
 extern uint64_t blkcg_get_read_bps(struct blkio_cgroup *blkcg,
 				     dev_t dev);
 extern uint64_t blkcg_get_write_bps(struct blkio_cgroup *blkcg,
@@ -360,14 +361,20 @@ static inline struct request_list *blk_get_rl(struct request_queue *q,
 	if (blkcg == &blkio_root_cgroup)
 		goto root_rl;
 
+	if (test_bit(QUEUE_FLAG_ELVSWITCH, &q->queue_flags))
+		goto root_rl;
+
 	/*
 	 * Try to use blkg->rl.  blkg lookup may fail under memory pressure
 	 * or if either the blkcg or queue is going away.  Fall back to
 	 * root_rl in such cases.
 	 */
 	blkg = blkiocg_lookup_group(blkcg, q, BLKIO_POLICY_PROP);
-	if (!blkg)
-		goto root_rl;
+	if (!blkg) {
+		blkg = blkiocg_lookup_group(blkcg, q, BLKIO_POLICY_TPPS);
+		if (!blkg)
+			goto root_rl;
+	}
 
 	rcu_read_unlock();
 	return &blkg->rl;

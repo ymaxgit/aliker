@@ -26,6 +26,17 @@ static void cfq_dtor(struct io_context *ioc)
 	}
 }
 
+static void tpps_dtor(struct io_context *ioc)
+{
+	if (!hlist_empty(&ioc->tic_list)) {
+		struct tpps_io_context *tic;
+
+		tic = list_entry(ioc->tic_list.first, struct tpps_io_context,
+								tic_list);
+		tic->dtor(ioc);
+	}
+}
+
 /*
  * IO Context helper functions. put_io_context() returns 1 if there are no
  * more users of this io context, 0 otherwise.
@@ -42,6 +53,7 @@ int put_io_context(struct io_context *ioc)
 		if (ioc->aic && ioc->aic->dtor)
 			ioc->aic->dtor(ioc->aic);
 		cfq_dtor(ioc);
+		tpps_dtor(ioc);
 		rcu_read_unlock();
 
 		kmem_cache_free(iocontext_cachep, ioc);
@@ -65,6 +77,20 @@ static void cfq_exit(struct io_context *ioc)
 	rcu_read_unlock();
 }
 
+static void tpps_exit(struct io_context *ioc)
+{
+	rcu_read_lock();
+
+	if (!hlist_empty(&ioc->tic_list)) {
+		struct tpps_io_context *tic;
+
+		tic = list_entry(ioc->tic_list.first, struct tpps_io_context,
+								tic_list);
+		tic->exit(ioc);
+	}
+	rcu_read_unlock();
+}
+
 /* Called by the exitting task */
 void exit_io_context(struct task_struct *task)
 {
@@ -79,6 +105,7 @@ void exit_io_context(struct task_struct *task)
 		if (ioc->aic && ioc->aic->exit)
 			ioc->aic->exit(ioc->aic);
 		cfq_exit(ioc);
+		tpps_exit(ioc);
 
 	}
 	put_io_context(ioc);
@@ -99,8 +126,11 @@ struct io_context *alloc_io_context(gfp_t gfp_flags, int node)
 		ret->nr_batch_requests = 0; /* because this is 0 */
 		ret->aic = NULL;
 		INIT_RADIX_TREE(&ret->radix_root, GFP_ATOMIC | __GFP_HIGH);
+		INIT_RADIX_TREE(&ret->radix_tic_root, GFP_ATOMIC | __GFP_HIGH);
 		INIT_HLIST_HEAD(&ret->cic_list);
+		INIT_HLIST_HEAD(&ret->tic_list);
 		ret->ioc_data = NULL;
+		ret->tic_data = NULL;
 #if defined(CONFIG_BLK_CGROUP) || defined(CONFIG_BLK_CGROUP_MODULE)
 		ret->cgroup_changed = 0;
 #endif
