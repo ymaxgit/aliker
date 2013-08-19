@@ -5,6 +5,10 @@ Alibaba Kernel is originated by [Alibaba](http://en.wikipedia.org/wiki/Alibaba_G
 For more information and documentation, please refer to
 http://kernel.taobao.org
 
+BRANCH EXPLANATION
+master branch is the source codes we are using in our production system.
+dev branch is where we are doing kernel development.
+So you can say that master is much much stable than the dev branch. :)
 Features
 ========
 
