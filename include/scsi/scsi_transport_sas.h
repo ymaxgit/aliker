@@ -49,6 +49,8 @@ struct sas_identify {
 	enum sas_protocol	target_port_protocols;
 	u64			sas_address;
 	u8			phy_identifier;
+	u8			phynum;
+	u16			slot;
 };
 
 struct sas_phy {

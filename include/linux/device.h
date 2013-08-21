@@ -425,6 +425,8 @@ struct device {
 	const struct attribute_group **groups;	/* optional groups */
 
 	void	(*release)(struct device *dev);
+	int		slot;
+	int		phynum;
 };
 
 /* Get the wakeup routines, which depend on struct device */

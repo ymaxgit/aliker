@@ -2489,7 +2489,7 @@ static int sd_probe(struct device *dev)
 			goto out_put;
 
 		spin_lock(&sd_index_lock);
-		error = ida_get_new(&sd_index_ida, &index);
+		error = ida_get_new_above(&sd_index_ida, dev->phynum, &index);
 		spin_unlock(&sd_index_lock);
 	} while (error == -EAGAIN);
 
