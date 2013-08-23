@@ -267,6 +267,10 @@ static struct scsi_device *scsi_alloc_sdev(struct scsi_target *starget,
 	INIT_WORK(&sdev->requeue_work, scsi_requeue_run_queue);
 
 	sdev->sdev_gendev.parent = get_device(&starget->dev);
+	/* the slot and phynum will be passed to sd_probe() by
+	 * device_add() in scsi_sysfs_add_sdev() */
+	sdev->sdev_gendev.slot = starget->dev.parent->slot;
+	sdev->sdev_gendev.phynum = starget->dev.parent->phynum;
 	sdev->sdev_target = starget;
 
 	/* usually NULL and set by ->slave_alloc instead */

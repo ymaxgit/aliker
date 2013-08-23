@@ -167,6 +167,8 @@ _transport_set_identify(struct MPT2SAS_ADAPTER *ioc, u16 handle,
 
 	/* sas_address */
 	identify->sas_address = le64_to_cpu(sas_device_pg0.SASAddress);
+	identify->slot = le16_to_cpu(sas_device_pg0.Slot);
+	identify->phynum = sas_device_pg0.PhyNum;
 
 	/* device_type */
 	switch (device_info & MPI2_SAS_DEVICE_INFO_MASK_DEVICE_TYPE) {
@@ -732,6 +734,15 @@ mpt2sas_transport_port_add(struct MPT2SAS_ADAPTER *ioc, u16 handle,
 		    mpt2sas_port->remote_identify.device_type);
 
 	rphy->identify = mpt2sas_port->remote_identify;
+	if (rphy->identify.device_type == SAS_END_DEVICE &&
+		(rphy->identify.target_port_protocols & SAS_PROTOCOL_SATA)) {
+		rphy->dev.slot = rphy->identify.slot;
+		rphy->dev.phynum = rphy->identify.phynum;
+	} else {
+		rphy->dev.slot = -1;
+		rphy->dev.phynum = -1;
+	}
+
 	if ((sas_rphy_add(rphy))) {
 		printk(MPT2SAS_ERR_FMT "failure at %s:%d/%s()!\n",
 		    ioc->name, __FILE__, __LINE__, __func__);

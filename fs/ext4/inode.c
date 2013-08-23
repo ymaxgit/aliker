@@ -4123,11 +4123,11 @@ static int ext4_end_aio_dio_nolock(ext4_io_end_t *io)
 
 	ret = ext4_convert_unwritten_extents(inode, offset, size);
 	if (ret < 0) {
-		printk(KERN_EMERG "%s: failed to convert unwritten"
-			"extents to written extents, error is %d"
-			" io is still on inode %lu aio dio list\n",
-                       __func__, ret, inode->i_ino);
-		return ret;
+		printk_ratelimited(KERN_EMERG "EXT4-fs (%s): "
+			"failed to convert unwritten extents to written "
+			"extents -- potential data loss!  "
+			"(inode %lu, offset %llu, size %zd, error %d)",
+			inode->i_sb->s_id, inode->i_ino, offset, size, ret);
 	}
 
 	if (io->iocb)
@@ -4166,7 +4166,7 @@ static void ext4_end_aio_dio_work(struct work_struct *work)
 	ret = ext4_end_aio_dio_nolock(io);
 	if (ret < 0){
 		mutex_unlock(&inode->i_mutex);
-		return;
+		goto free;
 	}
 	spin_lock_irqsave(&ei->i_completed_io_lock, flags);
 	if (!list_empty(&io->list))
