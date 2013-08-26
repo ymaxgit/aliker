@@ -16,5 +16,5 @@ Features
 * cpu accounting support for containers.
 * dio overwrite nolock support for fast SSDs.
 * Perf jit to enable you use perf to trace a java program.
-* Enable different memory management policy.
-* ...
+* Enable different memory management policy, see http://kernel.taobao.org/index.php/Kernel_Documents/mmap_18_32.
+* Please refer to every git commit for more information.
