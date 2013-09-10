@@ -6000,6 +6000,14 @@ void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 	total = cputime_add(cputime.utime, stime);
 	rtime = nsecs_to_cputime(cputime.sum_exec_runtime);
 
+	/*
+	 * Update userspace visible utime/stime values only if actual execution
+	 * time is bigger than already exported. Note that can happen, that we
+	 * provided bigger values due to scaling inaccuracy on big numbers.
+	 */
+	if (sig->prev_stime + sig->prev_utime >= rtime)
+		goto out;
+
 	if (!rtime) {
 		stime = 0;
 	} else if (!total) {
@@ -6013,6 +6021,7 @@ void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 	sig->prev_utime = max(sig->prev_utime,
 			      cputime_sub(rtime, sig->prev_stime));
 
+out:
 	*ut = sig->prev_utime;
 	*st = sig->prev_stime;
 }
