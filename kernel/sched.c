@@ -5992,12 +5992,12 @@ void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 {
 	struct signal_struct *sig = p->signal;
 	struct task_cputime cputime;
-	cputime_t rtime, stime, utime, total;
+	cputime_t rtime, stime, utime;
 
 	thread_group_cputime(p, &cputime);
 
 	stime = cputime.stime;
-	total = cputime_add(cputime.utime, stime);
+	utime = cputime.utime;
 	rtime = nsecs_to_cputime(cputime.sum_exec_runtime);
 
 	/*
@@ -6008,13 +6008,16 @@ void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 	if (sig->prev_stime + sig->prev_utime >= rtime)
 		goto out;
 
-	if (total) {
+	if (utime == 0) {
+		stime = rtime;
+	} else if (stime == 0) {
+		utime = rtime;
+	} else {
+		cputime_t total = cputime_add(utime, stime);
+
 		stime = scale_stime((__force u64)stime,
 				    (__force u64)rtime, (__force u64)total);
 		utime = rtime - stime;
-	} else {
-		stime = rtime;
-		utime = 0;
 	}
 
 	sig->prev_stime = max(sig->prev_stime, stime);
