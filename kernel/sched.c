@@ -5929,18 +5929,36 @@ void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 # define nsecs_to_cputime(__nsecs)	nsecs_to_jiffies(__nsecs)
 #endif
 
-static cputime_t scale_stime(cputime_t stime, cputime_t rtime, cputime_t total)
+/*
+ * Perform (stime * rtime) / total with reduced chances
+ * of multiplication overflows by using smaller factors
+ * like quotient and remainders of divisions between
+ * rtime and total.
+ */
+static cputime_t scale_stime(u64 stime, u64 rtime, u64 total)
 {
-	u64 temp = rtime;
+	u64 rem, res, scaled;
 
-	temp *= (__force u64) stime;
+	if (rtime >= total) {
+		/*
+		 * Scale up to rtime / total then add
+		 * the remainder scaled to stime / total.
+		 */
+		res = div64_u64_rem(rtime, total, &rem);
+		scaled = stime * res;
+		scaled += div64_u64(stime * rem, total);
+	} else {
+		/*
+		 * Same in reverse: scale down to total / rtime
+		 * then substract that result scaled to
+		 * to the remaining part.
+		 */
+		res = div64_u64_rem(total, rtime, &rem);
+		scaled = div64_u64(stime, res);
+		scaled -= div64_u64(scaled * rem, total);
+	}
 
-	if (sizeof(cputime_t) == 4)
-		temp = div_u64(temp, (u32) total);
-	else
-		temp = div64_u64(temp, (u64) total);
-
-	return (cputime_t) temp;
+	return (__force cputime_t) scaled;
 }
 
 void task_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
@@ -5982,10 +6000,14 @@ void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 	total = cputime_add(cputime.utime, stime);
 	rtime = nsecs_to_cputime(cputime.sum_exec_runtime);
 
-	if (total)
-		stime = scale_stime(stime, rtime, total);
-	else
+	if (!rtime) {
+		stime = 0;
+	} else if (!total) {
 		stime = rtime;
+	} else {
+		stime = scale_stime((__force u64)stime,
+				    (__force u64)rtime, (__force u64)total);
+	}
 
 	sig->prev_stime = max(sig->prev_stime, stime);
 	sig->prev_utime = max(sig->prev_utime,
