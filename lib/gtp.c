@@ -20,7 +20,7 @@
  */
 
 /* If "* 10" means that this is not a release version.  */
-#define GTP_VERSION			(20130706)
+#define GTP_VERSION			(20130915)
 
 #include <linux/version.h>
 #ifndef RHEL_RELEASE_VERSION
@@ -2297,7 +2297,7 @@ gtp_action_reg_read(struct gtp_trace_s *gts, int num)
 
 	switch (num) {
 #ifdef CONFIG_X86_32
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	case 0:
 		ret = gts->regs->ax;
 		break;
@@ -2311,7 +2311,7 @@ gtp_action_reg_read(struct gtp_trace_s *gts, int num)
 		ret = gts->regs->bx;
 		break;
 	case 4:
-		ret = (ULONGEST)(CORE_ADDR)&gts->regs->sp;
+		ret = gts->x86_32_sp;
 		break;
 	case 5:
 		ret = gts->regs->bp;
@@ -2363,7 +2363,7 @@ gtp_action_reg_read(struct gtp_trace_s *gts, int num)
 		ret = gts->regs->ebx;
 		break;
 	case 4:
-		ret = (ULONGEST)(CORE_ADDR)&gts->regs->esp;
+		ret = gts->x86_32_sp;
 		break;
 	case 5:
 		ret = gts->regs->ebp;
@@ -2405,7 +2405,7 @@ gtp_action_reg_read(struct gtp_trace_s *gts, int num)
 		break;
 #endif
 #else
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	case 0:
 		ret = gts->regs->ax;
 		break;
@@ -2553,7 +2553,7 @@ gtp_regs2ascii(struct pt_regs *regs, char *buf)
 	printk(GTP_DEBUG_V "gtp_regs2ascii: gs = 0x%x\n",
 		(unsigned int) regs->gs);
 #endif
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	sprintf(buf, "%08x", (unsigned int) swab32(regs->ax));
 	buf += 8;
 	sprintf(buf, "%08x", (unsigned int) swab32(regs->cx));
@@ -2645,7 +2645,7 @@ gtp_regs2ascii(struct pt_regs *regs, char *buf)
 	printk(GTP_DEBUG_V "gtp_regs2ascii: cs = 0x%lx\n", regs->cs);
 	printk(GTP_DEBUG_V "gtp_regs2ascii: ss = 0x%lx\n", regs->ss);
 #endif
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	sprintf(buf, "%016lx", (unsigned long) swab64(regs->ax));
 	buf += 16;
 	sprintf(buf, "%016lx", (unsigned long) swab64(regs->bx));
@@ -2696,7 +2696,7 @@ gtp_regs2ascii(struct pt_regs *regs, char *buf)
 	buf += 16;
 	sprintf(buf, "%016lx", (unsigned long) swab64(regs->r15));
 	buf += 16;
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	sprintf(buf, "%016lx", (unsigned long) swab64(regs->ip));
 	buf += 16;
 	sprintf(buf, "%08x",
@@ -2756,7 +2756,7 @@ gtp_regs2bin(struct pt_regs *regs, char *buf)
 	printk(GTP_DEBUG_V "gtp_regs2ascii: gs = 0x%x\n",
 		(unsigned int) regs->gs);
 #endif
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	memcpy(buf, &regs->ax, 4);
 	buf += 4;
 	memcpy(buf, &regs->cx, 4);
@@ -2848,7 +2848,7 @@ gtp_regs2bin(struct pt_regs *regs, char *buf)
 	printk(GTP_DEBUG_V "gtp_regs2ascii: cs = 0x%lx\n", regs->cs);
 	printk(GTP_DEBUG_V "gtp_regs2ascii: ss = 0x%lx\n", regs->ss);
 #endif
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	memcpy(buf, &regs->ax, 8);
 	buf += 8;
 	memcpy(buf, &regs->bx, 8);
@@ -2899,7 +2899,7 @@ gtp_regs2bin(struct pt_regs *regs, char *buf)
 	buf += 8;
 	memcpy(buf, &regs->r15, 8);
 	buf += 8;
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	memcpy(buf, &regs->ip, 8);
 	buf += 8;
 	memcpy(buf, &regs->flags, 4);
@@ -3423,7 +3423,7 @@ gtp_get_user_page(struct mm_struct *mm, unsigned long start,
 	/* XXX: not use find_extend_vma because cannot get
 	   find_vma_prev and expand_stack.  */
 	vma = find_vma(mm, start);
-	if (vma->vm_flags & VM_LOCKED)
+	if (vma == NULL || vma->vm_flags & VM_LOCKED)
 		return 0;
 
 	/* XXX: not use get_gate_vma because not support vm_normal_page. */
@@ -3595,7 +3595,7 @@ gtp_task_read(pid_t pid, struct task_struct *tsk, unsigned long addr,
 				kunmap_atomic(maddr, KM_IRQ1);
 #endif
 			else
-				kunmap(maddr);
+				kunmap(page);
 			page_cache_release(page);
 		}
 		len -= bytes;
@@ -4125,10 +4125,10 @@ gtp_action_r(struct gtp_trace_s *gts, struct action *ae)
 
 	memcpy(regs, gts->regs, sizeof(struct pt_regs));
 #ifdef CONFIG_X86_32
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
-	regs->sp = (unsigned long)&regs->sp;
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
+	regs->sp = gts->x86_32_sp;
 #else
-	regs->esp = (unsigned long)&regs->esp;
+	regs->esp = gts->x86_32_sp;
 #endif
 #endif	/* CONFIG_X86_32 */
 
@@ -4922,13 +4922,13 @@ gtp_handler_wakeup(void)
 static void
 gtp_step_stop(struct pt_regs *regs)
 {
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 	regs->flags &= ~(X86_EFLAGS_TF);
 #else
 	regs->eflags &= ~(X86_EFLAGS_TF);
 #endif
 	if (__get_cpu_var(gtp_step).irq_need_open) {
-#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 		regs->flags |= X86_EFLAGS_IF;
 #else
 		regs->eflags |= X86_EFLAGS_IF;
@@ -4966,8 +4966,32 @@ gtp_handler(struct gtp_trace_s *gts)
 		} else
 			gts->regs = task_pt_regs(get_current());
 
-		if (user_mode(gts->regs))
+		if (user_mode(gts->regs)) {
 			gts->read_memory = gtp_task_handler_read;
+#ifdef CONFIG_X86_32
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
+			gts->x86_32_sp = gts->regs->sp;
+#else
+			gts->x86_32_sp = gts->regs->esp;
+#endif
+#endif
+		} else {
+#ifdef CONFIG_X86_32
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
+			gts->x86_32_sp = (unsigned long)&gts->regs->sp;
+#else
+			gts->x86_32_sp = (unsigned long)&gts->regs->esp;
+#endif
+#endif
+		}
+	} else {
+#ifdef CONFIG_X86_32
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
+		gts->x86_32_sp = (unsigned long)&gts->regs->sp;
+#else
+		gts->x86_32_sp = (unsigned long)&gts->regs->esp;
+#endif
+#endif
 	}
 
 	if ((gts->tpe->flags & GTP_ENTRY_FLAGS_REG) == 0)
@@ -5186,7 +5210,7 @@ gtp_kp_post_handler_1(struct kprobe *p, struct pt_regs *regs,
 		/*XXX if there a another one, maybe we need add end frame to let reader know that this while step stop.  */
 		__get_cpu_var(gtp_step).step = tpe->step;
 		__get_cpu_var(gtp_step).tpe = tpe;
-		#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 		if (regs->flags & X86_EFLAGS_IF)
 		#else
 		if (regs->eflags & X86_EFLAGS_IF)
@@ -5194,7 +5218,7 @@ gtp_kp_post_handler_1(struct kprobe *p, struct pt_regs *regs,
 			__get_cpu_var(gtp_step).irq_need_open = 1;
 		else
 			__get_cpu_var(gtp_step).irq_need_open = 0;
-		#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+		#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 		regs->flags |= X86_EFLAGS_TF;
 		regs->flags &= ~(X86_EFLAGS_IF);
 		#else
@@ -5890,7 +5914,7 @@ gtp_notifier_call(struct notifier_block *self, unsigned long cmd,
 			if (__get_cpu_var(gtp_step).step > 1 && !need_stop) {
 				/* XXX: not sure need set eflags each step.  */
 #if 0
-				#if (LINUX_VERSION_CODE > KERNEL_VERSION(2,6,24))
+				#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,25))
 				args->regs->flags |= X86_EFLAGS_TF;
 				args->regs->flags &= ~(X86_EFLAGS_IF);
 				#else
@@ -10335,12 +10359,42 @@ gtp_traceframe_info_get(void)
 	return 0;
 }
 
+#ifdef GTP_RB
+
+static uint64_t	gtp_replay_step_id = 0;
+static ULONGEST	gtp_replay_step_tpe = 0;
+/* Point to the first entry of step.  */
+static void	*gtp_replay_step_begin = NULL;
+/* Point to the address that after last entry.  */
+static void	*gtp_replay_step_end = NULL;
+
+static void
+gtp_replay_reset(void)
+{
+	gtp_replay_step_id = 0;
+	gtp_replay_step_tpe = 0;
+
+	gtp_rb_read_reset();
+}
+
+#endif
+
 static int
 gtp_gdbrsp_qxfer_traceframe_info_read(char *pkg)
 {
 	ULONGEST	offset, len;
 
+#ifdef GTP_FRAME_SIMPLE
+	if (gtp_start || !gtp_frame_current)
+#endif
+#ifdef GTP_FTRACE_RING_BUFFER
 	if (gtp_start || gtp_frame_current_num < 0)
+#endif
+#ifdef GTP_RB
+	/* For gtp_replay_step_tpe, the KGTP is in replay mode.  Send traceframe_info
+	   will make GDB got error with access the memory.  So return -EINVAL.  */
+	if (gtp_start || gtp_frame_current_num < 0 || gtp_replay_step_tpe)
+#endif
 		return -EINVAL;
 
 	pkg = hex2ulongest(pkg, &offset);
@@ -10496,7 +10550,7 @@ gtp_gdbrsp_m(char *pkg)
 				       (unsigned long) cur_end);
 #endif
 				if (cur_start < cur_end) {
-					memcpy(gtp_m_buffer,
+					memcpy(gtp_m_buffer + cur_start - addr,
 						buf + cur_start - mr->addr,
 						cur_end - cur_start);
 					ret = 0;
@@ -10544,7 +10598,7 @@ gtp_gdbrsp_m(char *pkg)
 				       (unsigned long) cur_end);
 #endif
 				if (cur_start < cur_end) {
-					memcpy(gtp_m_buffer,
+					memcpy(gtp_m_buffer + cur_start - addr,
 						buf + cur_start - mr->addr,
 						cur_end - cur_start);
 					ret = 0;
@@ -10596,7 +10650,7 @@ gtp_gdbrsp_m(char *pkg)
 				       (unsigned long) cur_end);
 #endif
 				if (cur_start < cur_end) {
-					memcpy(gtp_m_buffer,
+					memcpy(gtp_m_buffer + cur_start - addr,
 						buf + cur_start - mr->addr,
 						cur_end - cur_start);
 					ret = 0;
@@ -10771,26 +10825,6 @@ gtp_gdbrsp_D(char *pkg)
 	} else
 		gtp_current_pid = 0;
 }
-
-#ifdef GTP_RB
-
-static uint64_t	gtp_replay_step_id = 0;
-static ULONGEST	gtp_replay_step_tpe = 0;
-/* Point to the first entry of step.  */
-static void	*gtp_replay_step_begin = NULL;
-/* Point to the address that after last entry.  */
-static void	*gtp_replay_step_end = NULL;
-
-static void
-gtp_replay_reset(void)
-{
-	gtp_replay_step_id = 0;
-	gtp_replay_step_tpe = 0;
-
-	gtp_rb_read_reset();
-}
-
-#endif
 
 /* Handle H + OP + thread-id packet. */
 
@@ -11149,6 +11183,8 @@ gtp_open(struct inode *inode, struct file *file)
 			ret = -ENOMEM;
 			goto out;
 		}
+		gtp_rw_bufp = gtp_rw_buf;
+		gtp_rw_size = 0;
 	}
 	gtp_rw_count++;
 
@@ -12764,7 +12800,66 @@ out:
 }
 EXPORT_SYMBOL(gtp_plugin_var_del);
 
-static void gtp_exit(void);
+static void
+gtp_release_all_mod(void)
+{
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+	unregister_module_notifier(&gtp_modules_load_del_nb);
+#endif
+
+#ifdef USE_PROC
+	remove_proc_entry("gtp", NULL);
+	remove_proc_entry("gtpframe", NULL);
+#if defined(GTP_FTRACE_RING_BUFFER) || defined(GTP_RB)
+	remove_proc_entry("gtpframe_pipe", NULL);
+#endif
+#else
+	if (gtp_dir)
+		debugfs_remove(gtp_dir);
+	if (gtpframe_dir)
+		debugfs_remove(gtpframe_dir);
+#if defined(GTP_FTRACE_RING_BUFFER) || defined(GTP_RB)
+	if (gtpframe_pipe_dir)
+		debugfs_remove(gtpframe_pipe_dir);
+#endif
+#endif
+
+	gtp_gdbrsp_qtstop();
+	gtp_gdbrsp_qtinit();
+#ifdef GTP_RB
+	if (!GTP_RB_PAGE_IS_EMPTY)
+		gtp_rb_page_free();
+#endif
+#if defined(GTP_FRAME_SIMPLE) || defined(GTP_FTRACE_RING_BUFFER)
+	if (gtp_frame) {
+#ifdef GTP_FRAME_SIMPLE
+		vfree(gtp_frame);
+#endif
+#ifdef GTP_FTRACE_RING_BUFFER
+		ring_buffer_free(gtp_frame);
+#endif
+		gtp_frame = NULL;
+	}
+#endif
+
+	if (gtp_wq)
+		destroy_workqueue(gtp_wq);
+
+#ifdef GTP_RB
+	gtp_rb_release();
+#endif
+	gtp_var_release(1);
+
+#ifdef GTP_RB
+	if (gtp_traceframe_info)
+		vfree(gtp_traceframe_info);
+#endif
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
+	if (gtp_modules_traceframe_info)
+		vfree(gtp_modules_traceframe_info);
+#endif
+}
 
 static int __init gtp_init(void)
 {
@@ -12933,69 +13028,14 @@ static int __init gtp_init(void)
 	ret = 0;
 out:
 	if (ret < 0)
-		gtp_exit();
+		gtp_release_all_mod();
 
 	return ret;
 }
 
-static void gtp_exit(void)
+static void __exit gtp_exit(void)
 {
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
-	unregister_module_notifier(&gtp_modules_load_del_nb);
-#endif
-
-#ifdef USE_PROC
-	remove_proc_entry("gtp", NULL);
-	remove_proc_entry("gtpframe", NULL);
-#if defined(GTP_FTRACE_RING_BUFFER) || defined(GTP_RB)
-	remove_proc_entry("gtpframe_pipe", NULL);
-#endif
-#else
-	if (gtp_dir)
-		debugfs_remove(gtp_dir);
-	if (gtpframe_dir)
-		debugfs_remove(gtpframe_dir);
-#if defined(GTP_FTRACE_RING_BUFFER) || defined(GTP_RB)
-	if (gtpframe_pipe_dir)
-		debugfs_remove(gtpframe_pipe_dir);
-#endif
-#endif
-
-	gtp_gdbrsp_qtstop();
-	gtp_gdbrsp_qtinit();
-#ifdef GTP_RB
-	if (!GTP_RB_PAGE_IS_EMPTY)
-		gtp_rb_page_free();
-#endif
-#if defined(GTP_FRAME_SIMPLE) || defined(GTP_FTRACE_RING_BUFFER)
-	if (gtp_frame) {
-#ifdef GTP_FRAME_SIMPLE
-		vfree(gtp_frame);
-#endif
-#ifdef GTP_FTRACE_RING_BUFFER
-		ring_buffer_free(gtp_frame);
-#endif
-		gtp_frame = NULL;
-	}
-#endif
-
-	if (gtp_wq)
-		destroy_workqueue(gtp_wq);
-
-#ifdef GTP_RB
-	gtp_rb_release();
-#endif
-	gtp_var_release(1);
-
-#ifdef GTP_RB
-	if (gtp_traceframe_info)
-		vfree(gtp_traceframe_info);
-#endif
-
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,30))
-	if (gtp_modules_traceframe_info)
-		vfree(gtp_modules_traceframe_info);
-#endif
+	gtp_release_all_mod();
 }
 
 module_init(gtp_init)
