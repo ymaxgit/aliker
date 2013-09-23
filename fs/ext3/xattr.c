@@ -114,6 +114,9 @@ static struct xattr_handler *ext3_xattr_handler_map[] = {
 #ifdef CONFIG_EXT3_FS_SECURITY
 	[EXT3_XATTR_INDEX_SECURITY]	     = &ext3_xattr_security_handler,
 #endif
+#ifdef CONFIG_EXT3_FS_SUBTREE
+	[EXT3_XATTR_INDEX_SUBTREE]	     = &ext3_xattr_subtree_handler,
+#endif
 };
 
 struct xattr_handler *ext3_xattr_handlers[] = {
@@ -125,6 +128,9 @@ struct xattr_handler *ext3_xattr_handlers[] = {
 #endif
 #ifdef CONFIG_EXT3_FS_SECURITY
 	&ext3_xattr_security_handler,
+#endif
+#ifdef CONFIG_EXT3_FS_SUBTREE
+	&ext3_xattr_subtree_handler,
 #endif
 	NULL
 };

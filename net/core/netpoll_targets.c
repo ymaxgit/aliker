@@ -1,5 +1,7 @@
 #include <linux/netpoll_targets.h>
 
+#define MAX_PARAM_LENGTH        256
+
 static void deferred_netpoll_cleanup(struct work_struct *work)
 {
 	struct netpoll_target *nt;
@@ -568,7 +570,7 @@ static struct config_item_type netpoll_subsys_type = {
 };
 
 static int dynamic_netpoll_targets_init(const char *subsys_name,
-					struct netpoll_targets *nts)
+					       struct netpoll_targets *nts)
 {
 	struct configfs_subsystem *subsys = &nts->configfs_subsys;
 
@@ -604,10 +606,18 @@ void netpoll_target_put(struct netpoll_target *nt)
 }
 EXPORT_SYMBOL_GPL(netpoll_target_put);
 
-#else	/* CONFIG_NETPOLL_TARGETS_DYNAMIC */
+#else	/* !CONFIG_NETPOLL_TARGETS_DYNAMIC */
+
 static int dynamic_netpoll_targets_init(const char *subsys_name,
-					struct netpoll_targets *nts) {}
-static int dynamic_netpoll_targets_exit(struct netpoll_targets *nts) {}
+					       struct netpoll_targets *nts)
+{
+	return 0;
+}
+
+static void dynamic_netpoll_targets_exit(struct netpoll_targets *nts)
+{
+}
+
 #endif	/* CONFIG_NETPOLL_TARGETS_DYNAMIC */
 
 /*
@@ -633,41 +643,60 @@ static int netpoll_targets_netdev_event(struct notifier_block *this,
 	unsigned long flags;
 	struct netpoll_target *nt;
 	struct net_device *dev = ptr;
+	bool stopped = false;
 
 	if (!(event == NETDEV_CHANGENAME || event == NETDEV_UNREGISTER ||
+	      event == NETDEV_RELEASE || event == NETDEV_JOIN ||
 	      event == NETDEV_BONDING_DESLAVE))
 		goto done;
 
 	spin_lock_irqsave(&nts->lock, flags);
 	list_for_each_entry(nt, &nts->list, list) {
-		if (nt->np_state == NETPOLL_ENABLED && nt->np.dev == dev) {
+		if (nt->np.dev == dev && nt->np_state == NETPOLL_ENABLED) {
 			switch (event) {
 			case NETDEV_CHANGENAME:
 				strlcpy(nt->np.dev_name, dev->name, IFNAMSIZ);
 				break;
 			case NETDEV_BONDING_DESLAVE:
+			case NETDEV_RELEASE:
+			case NETDEV_JOIN:
 			case NETDEV_UNREGISTER:
+				nt->np_state = NETPOLL_DISABLED;
+				stopped = true;
 				/*
 				 * We can't cleanup netpoll in atomic context.
 				 * Kick it off as deferred work.
 				 */
 				defer_netpoll_cleanup(nt);
+
+				break;
 			}
 		}
 	}
 	spin_unlock_irqrestore(&nts->lock, flags);
-	if (event == NETDEV_UNREGISTER || event == NETDEV_BONDING_DESLAVE)
-		printk(KERN_INFO "%s: network logging stopped, "
-			"interface %s %s\n", nts->subsys_name, dev->name,
-			event == NETDEV_UNREGISTER ? "unregistered" : "released slaves");
+	if (stopped) {
+		printk(KERN_INFO "%s: network logging stopped on "
+		       "interface %s as it", nts->subsys_name, dev->name);
+		switch (event) {
+		case NETDEV_UNREGISTER:
+			printk(KERN_CONT "unregistered\n");
+			break;
+		case NETDEV_RELEASE:
+			printk(KERN_CONT "released slaves\n");
+			break;
+		case NETDEV_JOIN:
+			printk(KERN_CONT "is joining a master device\n");
+			break;
+		}
+	}
 
 done:
 	return NOTIFY_DONE;
 }
 
 int register_netpoll_targets(const char *subsys_name,
-			     struct netpoll_targets *nts,
-			     char *static_targets)
+					   struct netpoll_targets *nts,
+					   char *static_targets)
 {
 	int err;
 	struct netpoll_target *nt, *tmp;
@@ -675,7 +704,7 @@ int register_netpoll_targets(const char *subsys_name,
 	char *input = static_targets;
 	unsigned long flags;
 
-	if (strlen(input)) {
+	if (strnlen(input, MAX_PARAM_LENGTH)) {
 		while ((target_config = strsep(&input, ";"))) {
 			nt = alloc_param_target(nts, target_config);
 			if (IS_ERR(nt)) {
@@ -746,4 +775,3 @@ void unregister_netpoll_targets(struct netpoll_targets *nts)
 	kfree(nts->subsys_name);
 }
 EXPORT_SYMBOL_GPL(unregister_netpoll_targets);
-

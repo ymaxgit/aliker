@@ -187,7 +187,7 @@ static int blk_fill_sgv4_hdr_rq(struct request_queue *q, struct request *rq,
 		return -EFAULT;
 
 	if (hdr->subprotocol == BSG_SUB_PROTOCOL_SCSI_CMD) {
-		if (blk_verify_command(rq->cmd, has_write_perm))
+		if (blk_verify_command(q, rq->cmd, has_write_perm))
 			return -EPERM;
 	} else if (!capable(CAP_SYS_RAWIO))
 		return -EPERM;
@@ -272,7 +272,7 @@ bsg_map_hdr(struct bsg_device *bd, struct sg_io_v4 *hdr, fmode_t has_write_perm,
 	 */
 	rq = blk_get_request(q, rw, GFP_KERNEL);
 	if (!rq)
-		return ERR_PTR(-ENOMEM);
+		return ERR_PTR(-ENODEV);
 	ret = blk_fill_sgv4_hdr_rq(q, rq, hdr, bd, has_write_perm);
 	if (ret)
 		goto out;
@@ -285,7 +285,7 @@ bsg_map_hdr(struct bsg_device *bd, struct sg_io_v4 *hdr, fmode_t has_write_perm,
 
 		next_rq = blk_get_request(q, READ, GFP_KERNEL);
 		if (!next_rq) {
-			ret = -ENOMEM;
+			ret = -ENODEV;
 			goto out;
 		}
 		rq->next_rq = next_rq;

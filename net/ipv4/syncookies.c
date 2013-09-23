@@ -311,9 +311,13 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb,
 	 */
 	if (opt && opt->optlen) {
 		ireq->opt = kmalloc_ip_options(opt->optlen, GFP_ATOMIC);
-		if (ireq->opt != NULL && ip_options_echo(ireq->opt, skb)) {
-			kfree_ip_options(ireq->opt);
-			ireq->opt = NULL;
+		if (ireq->opt != NULL) {
+			if (ip_options_echo(ireq->opt, skb)) {
+				kfree_ip_options(ireq->opt);
+				ireq->opt = NULL;
+			} else {
+				rhel_ip_options_set_alloc_flag(ireq->opt);
+			}
 		}
 	}
 
@@ -355,7 +359,8 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb,
 
 	tcp_select_initial_window(tcp_full_space(sk), req->mss,
 				  &req->rcv_wnd, &req->window_clamp,
-				  ireq->wscale_ok, &rcv_wscale);
+				  ireq->wscale_ok, &rcv_wscale,
+				  dst_metric(&rt->u.dst, RTAX_INITRWND));
 
 	ireq->rcv_wscale  = rcv_wscale;
 

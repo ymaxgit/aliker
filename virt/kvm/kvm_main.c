@@ -654,7 +654,6 @@ static int kvm_vm_ioctl_assign_device(struct kvm *kvm,
 	int r = 0, idx;
 	struct kvm_assigned_dev_kernel *match;
 	struct pci_dev *dev;
-	u8 header_type;
 
 	if (!(assigned_dev->flags & KVM_DEV_ASSIGN_ENABLE_IOMMU))
 		return -EINVAL;
@@ -686,8 +685,7 @@ static int kvm_vm_ioctl_assign_device(struct kvm *kvm,
 	}
 
 	/* Don't allow bridges to be assigned */
-	pci_read_config_byte(dev, PCI_HEADER_TYPE, &header_type);
-	if ((header_type & PCI_HEADER_TYPE) != PCI_HEADER_TYPE_NORMAL) {
+	if (dev->hdr_type != PCI_HEADER_TYPE_NORMAL) {
 		r = -EPERM;
 		goto out_put;
 	}
@@ -1275,7 +1273,7 @@ int __kvm_set_memory_region(struct kvm *kvm,
 			    struct kvm_userspace_memory_region *mem,
 			    int user_alloc)
 {
-	int r, flush_shadow = 0;
+	int r;
 	gfn_t base_gfn;
 	unsigned long npages;
 	unsigned long i;
@@ -1289,7 +1287,12 @@ int __kvm_set_memory_region(struct kvm *kvm,
 		goto out;
 	if (mem->guest_phys_addr & (PAGE_SIZE - 1))
 		goto out;
-	if (user_alloc && (mem->userspace_addr & (PAGE_SIZE - 1)))
+	/* We can read the guest memory with __xxx_user() later on. */
+	if (user_alloc &&
+	    ((mem->userspace_addr & (PAGE_SIZE - 1)) ||
+	     !access_ok(VERIFY_WRITE,
+			(void __user *)(unsigned long)mem->userspace_addr,
+			mem->memory_size)))
 		goto out;
 	if (mem->slot >= KVM_MEMORY_SLOTS + KVM_PRIVATE_MEM_SLOTS)
 		goto out;
@@ -1403,9 +1406,6 @@ skip_lpage:
 		if (!new.dirty_bitmap)
 			goto out_free;
 		memset(new.dirty_bitmap, 0, dirty_bytes);
-		/* destroy any largepage mappings for dirty tracking */
-		if (old.npages)
-			flush_shadow = 1;
 	}
 #else  /* not defined CONFIG_S390 */
 	new.user_alloc = user_alloc;
@@ -1421,6 +1421,7 @@ skip_lpage:
 		memcpy(slots, kvm->memslots, sizeof(struct kvm_memslots));
 		if (mem->slot >= slots->nmemslots)
 			slots->nmemslots = mem->slot + 1;
+		slots->generation++;
 		slots->memslots[mem->slot].flags |= KVM_MEMSLOT_INVALID;
 
 		old_memslots = kvm->memslots;
@@ -1458,6 +1459,7 @@ skip_lpage:
 	memcpy(slots, kvm->memslots, sizeof(struct kvm_memslots));
 	if (mem->slot >= slots->nmemslots)
 		slots->nmemslots = mem->slot + 1;
+	slots->generation++;
 
 	/* actual memory is freed via old in kvm_free_physmem_slot below */
 	if (!npages) {
@@ -1476,9 +1478,6 @@ skip_lpage:
 
 	kvm_free_physmem_slot(&old, &new);
 	kfree(old_memslots);
-
-	if (flush_shadow)
-		kvm_arch_flush_shadow(kvm);
 
 	return 0;
 
@@ -1588,10 +1587,10 @@ int kvm_is_error_hva(unsigned long addr)
 }
 EXPORT_SYMBOL_GPL(kvm_is_error_hva);
 
-struct kvm_memory_slot *gfn_to_memslot_unaliased(struct kvm *kvm, gfn_t gfn)
+static struct kvm_memory_slot *
+__gfn_to_memslot_unaliased(struct kvm_memslots *slots, gfn_t gfn)
 {
 	int i;
-	struct kvm_memslots *slots = rcu_dereference(kvm->memslots);
 
 	for (i = 0; i < slots->nmemslots; ++i) {
 		struct kvm_memory_slot *memslot = &slots->memslots[i];
@@ -1601,6 +1600,12 @@ struct kvm_memory_slot *gfn_to_memslot_unaliased(struct kvm *kvm, gfn_t gfn)
 			return memslot;
 	}
 	return NULL;
+}
+
+struct kvm_memory_slot *gfn_to_memslot_unaliased(struct kvm *kvm, gfn_t gfn)
+{
+	struct kvm_memslots *slots = kvm_memslots(kvm);
+	return __gfn_to_memslot_unaliased(slots, gfn);
 }
 EXPORT_SYMBOL_GPL(gfn_to_memslot_unaliased);
 
@@ -1648,15 +1653,21 @@ int memslot_id(struct kvm *kvm, gfn_t gfn)
 	return memslot - slots->memslots;
 }
 
+static unsigned long
+__gfn_to_hva(struct kvm_memory_slot *slot, gfn_t gfn)
+{
+	if (!slot || slot->flags & KVM_MEMSLOT_INVALID)
+		return bad_hva();
+	return (slot->userspace_addr + (gfn - slot->base_gfn) * PAGE_SIZE);
+}
+
 unsigned long gfn_to_hva(struct kvm *kvm, gfn_t gfn)
 {
 	struct kvm_memory_slot *slot;
 
 	gfn = unalias_gfn_instantiation(kvm, gfn);
 	slot = gfn_to_memslot_unaliased(kvm, gfn);
-	if (!slot || slot->flags & KVM_MEMSLOT_INVALID)
-		return bad_hva();
-	return (slot->userspace_addr + (gfn - slot->base_gfn) * PAGE_SIZE);
+	return __gfn_to_hva(slot, gfn);
 }
 EXPORT_SYMBOL_GPL(gfn_to_hva);
 
@@ -1823,7 +1834,7 @@ int kvm_read_guest_page(struct kvm *kvm, gfn_t gfn, void *data, int offset,
 	addr = gfn_to_hva(kvm, gfn);
 	if (kvm_is_error_hva(addr))
 		return -EFAULT;
-	r = copy_from_user(data, (void __user *)addr + offset, len);
+	r = __copy_from_user(data, (void __user *)addr + offset, len);
 	if (r)
 		return -EFAULT;
 	return 0;
@@ -1907,6 +1918,110 @@ int kvm_write_guest(struct kvm *kvm, gpa_t gpa, const void *data,
 	return 0;
 }
 
+int kvm_gfn_to_hva_cache_init(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
+			      gpa_t gpa)
+{
+	struct kvm_memslots *slots = kvm_memslots(kvm);
+	int offset = offset_in_page(gpa);
+	gfn_t gfn = gpa >> PAGE_SHIFT;
+
+	ghc->gpa = gpa;
+	ghc->generation = slots->generation;
+	ghc->memslot = __gfn_to_memslot_unaliased(slots, gfn);
+	ghc->hva = __gfn_to_hva(ghc->memslot, gfn);
+	if (!kvm_is_error_hva(ghc->hva))
+		ghc->hva += offset;
+	else
+		return -EFAULT;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kvm_gfn_to_hva_cache_init);
+
+int kvm_write_guest_cached(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
+			   void *data, unsigned long len)
+{
+	struct kvm_memslots *slots = kvm_memslots(kvm);
+	int r;
+
+	if (slots->generation != ghc->generation)
+		kvm_gfn_to_hva_cache_init(kvm, ghc, ghc->gpa);
+
+	if (kvm_is_error_hva(ghc->hva))
+		return -EFAULT;
+
+	r = copy_to_user((void __user *)ghc->hva, data, len);
+	if (r)
+		return -EFAULT;
+	mark_page_dirty_in_slot(kvm, ghc->memslot, ghc->gpa >> PAGE_SHIFT);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kvm_write_guest_cached);
+
+/*
+ * Same as vm_write_guest_cached but OK to use with interrupts disabled.
+ * Returns -EAGAIN if access would require sleeping. In this case no write
+ * takes place; the guest address might or might not be valid.
+ */
+int kvm_write_guest_cached_atomic(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
+				  void *data, unsigned long len)
+{
+	struct kvm_memslots *slots = kvm_memslots(kvm);
+	int r;
+
+	if (slots->generation != ghc->generation)
+		kvm_gfn_to_hva_cache_init(kvm, ghc, ghc->gpa);
+
+	if (kvm_is_error_hva(ghc->hva))
+		return -EFAULT;
+
+	if (!access_ok(VERIFY_WRITE, (void __user *)ghc->hva, len))
+		return -EFAULT;
+
+	pagefault_disable();
+	/*
+	 * In case of a page fault the page fault handler will detect we are in
+	 * atomic context and go directly to fixups instead of processing the
+	 * page fault; __copy_to_user_inatomic() then returns right away with
+	 * error.
+	 */
+	r = __copy_to_user_inatomic((void __user *)ghc->hva, data, len);
+	pagefault_enable();
+	if (r) {
+		/*
+		 * Error means a pagefault is required: e.g. page in swap, or
+		 * an invalid address. No write took place: accesses do not
+		 * cross the page boundary, so failures are never partial.
+		 */
+		return -EAGAIN;
+	}
+	mark_page_dirty_in_slot(kvm, ghc->memslot, ghc->gpa >> PAGE_SHIFT);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kvm_write_guest_cached_atomic);
+
+int kvm_read_guest_cached(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
+			   void *data, unsigned long len)
+{
+	struct kvm_memslots *slots = kvm_memslots(kvm);
+	int r;
+
+	if (slots->generation != ghc->generation)
+		kvm_gfn_to_hva_cache_init(kvm, ghc, ghc->gpa);
+
+	if (kvm_is_error_hva(ghc->hva))
+		return -EFAULT;
+
+	r = __copy_from_user(data, (void __user *)ghc->hva, len);
+	if (r)
+		return -EFAULT;
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(kvm_read_guest_cached);
+
 int kvm_clear_guest_page(struct kvm *kvm, gfn_t gfn, int offset, int len)
 {
 	return kvm_write_guest_page(kvm, gfn, empty_zero_page, offset, len);
@@ -1932,12 +2047,9 @@ int kvm_clear_guest(struct kvm *kvm, gpa_t gpa, unsigned long len)
 }
 EXPORT_SYMBOL_GPL(kvm_clear_guest);
 
-void mark_page_dirty(struct kvm *kvm, gfn_t gfn)
+void mark_page_dirty_in_slot(struct kvm *kvm, struct kvm_memory_slot *memslot,
+			     gfn_t gfn)
 {
-	struct kvm_memory_slot *memslot;
-
-	gfn = unalias_gfn(kvm, gfn);
-	memslot = gfn_to_memslot_unaliased(kvm, gfn);
 	if (memslot && memslot->dirty_bitmap) {
 		unsigned long rel_gfn = gfn - memslot->base_gfn;
 
@@ -1945,6 +2057,14 @@ void mark_page_dirty(struct kvm *kvm, gfn_t gfn)
 		if (!test_bit(rel_gfn, memslot->dirty_bitmap))
 			set_bit(rel_gfn, memslot->dirty_bitmap);
 	}
+}
+
+void mark_page_dirty(struct kvm *kvm, gfn_t gfn)
+{
+	struct kvm_memory_slot *memslot;
+
+	memslot = gfn_to_memslot(kvm, gfn);
+	mark_page_dirty_in_slot(kvm, memslot, gfn);
 }
 
 /*

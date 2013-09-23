@@ -313,6 +313,7 @@ static void handle_internal_command(int argc, const char **argv)
 		{ "version",	cmd_version,	0 },
 		{ "script",	cmd_script,	0 },
 		{ "sched",	cmd_sched,	0 },
+		{ "probe",      cmd_probe,      0 },
 		{ "kmem",	cmd_kmem,	0 },
 		{ "lock",	cmd_lock,	0 },
 		{ "kvm",	cmd_kvm,	0 },
@@ -420,6 +421,21 @@ void pthread__unblock_sigwinch(void)
 	pthread_sigmask(SIG_UNBLOCK, &set, NULL);
 }
 
+static int adj_oom_score(void)
+{
+	int fd = 0;
+	int ret = 0;
+	const char *high_oom_score = "15";
+	fd = open("/proc/self/oom_adj", O_WRONLY);
+	if (fd < 0)
+		return 1;
+	ret = write(fd, high_oom_score, strlen(high_oom_score));
+	if (ret < 0)
+		return 1;
+	close(fd);
+	return 0;
+}
+
 int main(int argc, const char **argv)
 {
 	const char *cmd;
@@ -427,6 +443,10 @@ int main(int argc, const char **argv)
 	cmd = perf_extract_argv0_path(argv[0]);
 	if (!cmd)
 		cmd = "perf-help";
+	if(adj_oom_score())
+		die("Cannot adjust my oom_adj, pls make sure you are root \
+				or have CAP_SYS_RESOURCE");
+
 	/* get debugfs mount point from /proc/mounts */
 	debugfs_mount(NULL);
 	/*

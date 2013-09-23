@@ -788,23 +788,35 @@ int bdi_writeback_task(struct bdi_writeback *wb)
 		if (pages_written)
 			last_active = jiffies;
 		else if (wait_jiffies != -1UL) {
-			unsigned long max_idle;
+			unsigned long max_idle = 0;
 
 			/*
 			 * Longest period of inactivity that we tolerate. If we
 			 * see dirty data again later, the task will get
 			 * recreated automatically.
+			 *
+			 * Note from Zheng Liu:
+			 * When dirty_writeback_interval == 0 and there is no
+			 * any dirty pages that need to be written out, we
+			 * should return immediately to avoid to burn CPU
+			 * cycles.
 			 */
-			max_idle = max(5UL * 60 * HZ, wait_jiffies);
+			if (dirty_writeback_interval)
+				max_idle = max(5UL * 60 * HZ, wait_jiffies);
 			if (time_after(jiffies, max_idle + last_active))
 				break;
 		}
 
-		if (dirty_writeback_interval) {
-			wait_jiffies = msecs_to_jiffies(dirty_writeback_interval * 10);
+		/*
+		 * Upstream kernel has a better solution to fix this bug, but
+		 * it is quite complicated.  Please refer Artem Bityutskiy's
+		 * patch series: 253c34e9b10c30d3064be654b5b78fbc1a8b1896.
+		 */
+		wait_jiffies = msecs_to_jiffies(dirty_writeback_interval * 10);
+		if (dirty_writeback_interval)
 			schedule_timeout_interruptible(wait_jiffies);
-		} else
-			schedule();
+		else
+			schedule_timeout_interruptible(5UL * 60 * HZ);
 
 		try_to_freeze();
 	}

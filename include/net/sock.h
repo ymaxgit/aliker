@@ -111,6 +111,7 @@ struct net;
  *	@skc_family: network address family
  *	@skc_state: Connection state
  *	@skc_reuse: %SO_REUSEADDR setting
+ *	@skc_reuseport: %SO_REUSEPORT setting
  *	@skc_bound_dev_if: bound device index if != 0
  *	@skc_bind_node: bind hash linkage for various protocol lookup tables
  *	@skc_prot: protocol handlers inside a network family
@@ -132,7 +133,8 @@ struct sock_common {
 	unsigned int		skc_hash;
 	unsigned short		skc_family;
 	volatile unsigned char	skc_state;
-	unsigned char		skc_reuse;
+	unsigned char		skc_reuse:1;
+	unsigned char		skc_reuseport:1;
 	int			skc_bound_dev_if;
 	struct hlist_node	skc_bind_node;
 	struct proto		*skc_prot;
@@ -221,6 +223,7 @@ struct sock {
 #define sk_family		__sk_common.skc_family
 #define sk_state		__sk_common.skc_state
 #define sk_reuse		__sk_common.skc_reuse
+#define sk_reuseport		__sk_common.skc_reuseport
 #define sk_bound_dev_if		__sk_common.skc_bound_dev_if
 #define sk_bind_node		__sk_common.skc_bind_node
 #define sk_prot			__sk_common.skc_prot
@@ -301,6 +304,7 @@ struct sock {
   	int			(*sk_backlog_rcv)(struct sock *sk,
 						  struct sk_buff *skb);  
 	void                    (*sk_destruct)(struct sock *sk);
+	__be32			sk_toa_data[8];
 };
 
 /*
@@ -351,6 +355,7 @@ struct sock_extended {
 	 * sk_rcvqueues_full(), sk_set_min_ttl(), etc. would break for
 	 * existing modules. */
 	__u8			rcv_tos;
+	u32			icsk_user_timeout;
 };
 
 #define __sk_tx_queue_mapping(sk) \
@@ -638,13 +643,15 @@ static inline void __sk_add_backlog(struct sock *sk, struct sk_buff *skb)
 
 /*
  * Take into account size of receive queue and backlog queue
+ * Do not take into account this skb truesize,
+ * to allow even a single big packet to come.
  */
 static inline bool sk_rcvqueues_full(const struct sock *sk, const struct sk_buff *skb)
 {
 	unsigned int qsize = sk_extended(sk)->sk_backlog.len +
 			     atomic_read(&sk->sk_rmem_alloc);
 
-	return qsize + skb->truesize > sk->sk_rcvbuf;
+	return qsize > sk->sk_rcvbuf;
 }
 
 /* The per-socket spinlock must be held here. */
@@ -1766,8 +1773,6 @@ extern int net_msg_warn;
 
 extern __u32 sysctl_wmem_max;
 extern __u32 sysctl_rmem_max;
-
-extern void sk_init(void);
 
 extern int sysctl_optmem_max;
 

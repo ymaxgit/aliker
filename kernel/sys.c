@@ -369,10 +369,6 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 	char buffer[256];
 	int ret = 0;
 
-	/* We only trust the superuser with rebooting the system. */
-	if (!capable(CAP_SYS_BOOT))
-		return -EPERM;
-
 	/* For safety, we require "magic" arguments. */
 	if (magic1 != LINUX_REBOOT_MAGIC1 ||
 	    (magic2 != LINUX_REBOOT_MAGIC2 &&
@@ -380,6 +376,44 @@ SYSCALL_DEFINE4(reboot, int, magic1, int, magic2, unsigned int, cmd,
 			magic2 != LINUX_REBOOT_MAGIC2B &&
 	                magic2 != LINUX_REBOOT_MAGIC2C))
 		return -EINVAL;
+
+	/* We only trust the superuser with rebooting the system. */
+	if (!capable(CAP_SYS_BOOT)) {
+		if (in_noninit_pid_ns(current->nsproxy->pid_ns) &&
+				current_euid() == 0 &&
+				(cmd == LINUX_REBOOT_CMD_RESTART ||
+				 cmd == LINUX_REBOOT_CMD_HALT ||
+				 cmd == LINUX_REBOOT_CMD_POWER_OFF)) {
+			char *argv[5], *envp[3], *buf = NULL;
+			int i = 0;
+			struct pid_namespace *pid_ns = task_active_pid_ns(current);
+			pid_t pid;
+
+			if (!(buf = kmalloc(32, GFP_KERNEL)))
+				return -EPERM;
+			pid = pid_nr(task_pid(pid_ns->child_reaper));
+			snprintf(buf, 32, "%d", pid);
+			argv[0] = "/bin/bash";
+			argv[1] = "/opt/appcommon/bin/lxc-reboot.sh";
+			argv[2] = buf;
+			if (cmd == LINUX_REBOOT_CMD_RESTART)
+				argv[3] = "restart";
+			else
+				argv[3] = "stop";
+			argv[4] = NULL;
+
+			i = 0;
+			/* minimal command environment */
+			envp[i++] = "HOME=/";
+			envp[i++] = "PATH=/sbin:/bin:/usr/sbin:/usr/bin";
+			envp[i] = NULL;
+
+			call_usermodehelper(argv[0], argv, envp, UMH_WAIT_EXEC);
+			kfree(buf);
+			return ret;
+		} else
+			return -EPERM;
+	}
 
 	/* Instead of trying to make the power_off code look like
 	 * halt when pm_power_off is not set do it the easy way.

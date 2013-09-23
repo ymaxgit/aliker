@@ -38,7 +38,7 @@ static void array_insert(void *base, size_t elt_size, unsigned nr_elts,
 /*----------------------------------------------------------------*/
 
 /* makes the assumption that no two keys are the same. */
-static int bsearch(struct node *n, uint64_t key, int want_hi)
+static int bsearch(struct btree_node *n, uint64_t key, int want_hi)
 {
 	int lo = -1, hi = le32_to_cpu(n->header.nr_entries);
 
@@ -58,12 +58,12 @@ static int bsearch(struct node *n, uint64_t key, int want_hi)
 	return want_hi ? hi : lo;
 }
 
-int lower_bound(struct node *n, uint64_t key)
+int lower_bound(struct btree_node *n, uint64_t key)
 {
 	return bsearch(n, key, 0);
 }
 
-void inc_children(struct dm_transaction_manager *tm, struct node *n,
+void inc_children(struct dm_transaction_manager *tm, struct btree_node *n,
 		  struct dm_btree_value_type *vt)
 {
 	unsigned i;
@@ -74,11 +74,10 @@ void inc_children(struct dm_transaction_manager *tm, struct node *n,
 			dm_tm_inc(tm, value64(n, i));
 	else if (vt->inc)
 		for (i = 0; i < nr_entries; i++)
-			vt->inc(vt->context,
-				value_ptr(n, i, vt->size));
+			vt->inc(vt->context, value_ptr(n, i));
 }
 
-static int insert_at(size_t value_size, struct node *node, unsigned index,
+static int insert_at(size_t value_size, struct btree_node *node, unsigned index,
 		      uint64_t key, void *value)
 		      __dm_written_to_disk(value)
 {
@@ -123,7 +122,7 @@ int dm_btree_empty(struct dm_btree_info *info, dm_block_t *root)
 {
 	int r;
 	struct dm_block *b;
-	struct node *n;
+	struct btree_node *n;
 	size_t block_size;
 	uint32_t max_entries;
 
@@ -155,7 +154,7 @@ EXPORT_SYMBOL_GPL(dm_btree_empty);
 #define MAX_SPINE_DEPTH 64
 struct frame {
 	struct dm_block *b;
-	struct node *n;
+	struct btree_node *n;
 	unsigned level;
 	unsigned nr_children;
 	unsigned current_child;
@@ -281,7 +280,7 @@ int dm_btree_del(struct dm_btree_info *info, dm_block_t root)
 
 				for (i = 0; i < f->nr_children; i++)
 					info->value_type.dec(info->value_type.context,
-							     value_ptr(f->n, i, info->value_type.size));
+							     value_ptr(f->n, i));
 			}
 			f->current_child = f->nr_children;
 		}
@@ -296,7 +295,7 @@ EXPORT_SYMBOL_GPL(dm_btree_del);
 /*----------------------------------------------------------------*/
 
 static int btree_lookup_raw(struct ro_spine *s, dm_block_t block, uint64_t key,
-			    int (*search_fn)(struct node *, uint64_t),
+			    int (*search_fn)(struct btree_node *, uint64_t),
 			    uint64_t *result_key, void *v, size_t value_size)
 {
 	int i, r;
@@ -320,7 +319,7 @@ static int btree_lookup_raw(struct ro_spine *s, dm_block_t block, uint64_t key,
 	} while (!(flags & LEAF_NODE));
 
 	*result_key = le64_to_cpu(ro_node(s)->keys[i]);
-	memcpy(v, value_ptr(ro_node(s), i, value_size), value_size);
+	memcpy(v, value_ptr(ro_node(s), i), value_size);
 
 	return 0;
 }
@@ -407,7 +406,7 @@ static int btree_split_sibling(struct shadow_spine *s, dm_block_t root,
 	size_t size;
 	unsigned nr_left, nr_right;
 	struct dm_block *left, *right, *parent;
-	struct node *ln, *rn, *pn;
+	struct btree_node *ln, *rn, *pn;
 	__le64 location;
 
 	left = shadow_current(s);
@@ -432,7 +431,7 @@ static int btree_split_sibling(struct shadow_spine *s, dm_block_t root,
 
 	size = le32_to_cpu(ln->header.flags) & INTERNAL_NODE ?
 		sizeof(uint64_t) : s->info->value_type.size;
-	memcpy(value_ptr(rn, 0, size), value_ptr(ln, nr_left, size),
+	memcpy(value_ptr(rn, 0), value_ptr(ln, nr_left),
 	       size * nr_right);
 
 	/*
@@ -443,7 +442,7 @@ static int btree_split_sibling(struct shadow_spine *s, dm_block_t root,
 	pn = dm_block_data(parent);
 	location = cpu_to_le64(dm_block_location(left));
 	__dm_bless_for_disk(&location);
-	memcpy_disk(value_ptr(pn, parent_index, sizeof(__le64)),
+	memcpy_disk(value_ptr(pn, parent_index),
 		    &location, sizeof(__le64));
 
 	location = cpu_to_le64(dm_block_location(right));
@@ -492,7 +491,7 @@ static int btree_split_beneath(struct shadow_spine *s, uint64_t key)
 	size_t size;
 	unsigned nr_left, nr_right;
 	struct dm_block *left, *right, *new_parent;
-	struct node *pn, *ln, *rn;
+	struct btree_node *pn, *ln, *rn;
 	__le64 val;
 
 	new_parent = shadow_current(s);
@@ -529,8 +528,8 @@ static int btree_split_beneath(struct shadow_spine *s, uint64_t key)
 
 	size = le32_to_cpu(pn->header.flags) & INTERNAL_NODE ?
 		sizeof(__le64) : s->info->value_type.size;
-	memcpy(value_ptr(ln, 0, size), value_ptr(pn, 0, size), nr_left * size);
-	memcpy(value_ptr(rn, 0, size), value_ptr(pn, nr_left, size),
+	memcpy(value_ptr(ln, 0), value_ptr(pn, 0), nr_left * size);
+	memcpy(value_ptr(rn, 0), value_ptr(pn, nr_left),
 	       nr_right * size);
 
 	/* new_parent should just point to l and r now */
@@ -545,12 +544,12 @@ static int btree_split_beneath(struct shadow_spine *s, uint64_t key)
 	val = cpu_to_le64(dm_block_location(left));
 	__dm_bless_for_disk(&val);
 	pn->keys[0] = ln->keys[0];
-	memcpy_disk(value_ptr(pn, 0, sizeof(__le64)), &val, sizeof(__le64));
+	memcpy_disk(value_ptr(pn, 0), &val, sizeof(__le64));
 
 	val = cpu_to_le64(dm_block_location(right));
 	__dm_bless_for_disk(&val);
 	pn->keys[1] = rn->keys[0];
-	memcpy_disk(value_ptr(pn, 1, sizeof(__le64)), &val, sizeof(__le64));
+	memcpy_disk(value_ptr(pn, 1), &val, sizeof(__le64));
 
 	/*
 	 * rejig the spine.  This is ugly, since it knows too
@@ -577,7 +576,7 @@ static int btree_insert_raw(struct shadow_spine *s, dm_block_t root,
 			    uint64_t key, unsigned *index)
 {
 	int r, i = *index, top = 1;
-	struct node *node;
+	struct btree_node *node;
 
 	for (;;) {
 		r = shadow_step(s, root, vt);
@@ -595,7 +594,7 @@ static int btree_insert_raw(struct shadow_spine *s, dm_block_t root,
 			__le64 location = cpu_to_le64(dm_block_location(shadow_current(s)));
 
 			__dm_bless_for_disk(&location);
-			memcpy_disk(value_ptr(dm_block_data(shadow_parent(s)), i, sizeof(uint64_t)),
+			memcpy_disk(value_ptr(dm_block_data(shadow_parent(s)), i),
 				    &location, sizeof(__le64));
 		}
 
@@ -644,7 +643,7 @@ static int insert(struct dm_btree_info *info, dm_block_t root,
 	unsigned level, index = -1, last_level = info->levels - 1;
 	dm_block_t block = root;
 	struct shadow_spine spine;
-	struct node *n;
+	struct btree_node *n;
 	struct dm_btree_value_type le64_type;
 
 	le64_type.context = NULL;
@@ -710,12 +709,12 @@ static int insert(struct dm_btree_info *info, dm_block_t root,
 		    (!info->value_type.equal ||
 		     !info->value_type.equal(
 			     info->value_type.context,
-			     value_ptr(n, index, info->value_type.size),
+			     value_ptr(n, index),
 			     value))) {
 			info->value_type.dec(info->value_type.context,
-					     value_ptr(n, index, info->value_type.size));
+					     value_ptr(n, index));
 		}
-		memcpy_disk(value_ptr(n, index, info->value_type.size),
+		memcpy_disk(value_ptr(n, index),
 			    value, info->value_type.size);
 	}
 

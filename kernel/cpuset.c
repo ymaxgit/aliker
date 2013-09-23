@@ -59,6 +59,13 @@
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
 #include <linux/cgroup.h>
+#include <linux/kernel_stat.h>
+
+#ifdef CONFIG_CGROUP_CPUACCT
+extern struct kernel_cpustat *cgroup_ca_kcpustat_ptr(struct cgroup*, int);
+#else
+struct kernel_cpustat *cgroup_ca_kcpustat_ptr(struct cgroup*, int) { return NULL; }
+#endif
 
 /*
  * Tracks how many cpusets are currently defined in system.
@@ -106,6 +113,12 @@ static inline struct cpuset *cgroup_cs(struct cgroup *cont)
 {
 	return container_of(cgroup_subsys_state(cont, cpuset_subsys_id),
 			    struct cpuset, css);
+}
+
+cpumask_var_t get_cs_cpu_allowed(struct cgroup *cgrp)
+{
+	struct cpuset *cs = cgroup_cs(cgrp);
+	return cs->cpus_allowed;
 }
 
 /* Retrieve the cpuset for a task */
@@ -847,6 +860,7 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 	struct ptr_heap heap;
 	int retval;
 	int is_load_balanced;
+	struct cpumask new_added;
 
 	/* top_cpuset.cpus_allowed tracks cpu_online_map; it's read-only */
 	if (cs == &top_cpuset)
@@ -881,6 +895,44 @@ static int update_cpumask(struct cpuset *cs, struct cpuset *trialcs,
 		return retval;
 
 	is_load_balanced = is_sched_load_balance(trialcs);
+
+#ifdef CONFIG_CGROUP_CPUACCT
+	if (likely(cpuacct_subsys.active)) {
+		struct cgroup *cgrp;
+		int i;
+
+		memset(&new_added, 0, sizeof(new_added));
+		/* new_added = new - old = new & (~old) */
+		cpumask_andnot(&new_added, trialcs->cpus_allowed, cs->cpus_allowed);
+		if (!cpumask_empty(&new_added)) {
+			cgrp = cs->css.cgroup;
+			if (cgroup_subsys_state(cgrp, cpuacct_subsys_id)) {
+				struct kernel_cpustat *kcpustat;
+				for_each_cpu_and(i, cpu_possible_mask, &new_added) {
+					kcpustat = cgroup_ca_kcpustat_ptr(cgrp, i);
+					kcpustat->cpustat[CPUTIME_IDLE_BASE] =
+						kcpustat_cpu(i).cpustat[CPUTIME_IDLE];
+					kcpustat->cpustat[CPUTIME_IOWAIT_BASE] =
+						kcpustat_cpu(i).cpustat[CPUTIME_IOWAIT];
+					kcpustat->cpustat[CPUTIME_STEAL_BASE] =
+						kcpustat_cpu(i).cpustat[CPUTIME_USER]
+						+ kcpustat_cpu(i).cpustat[CPUTIME_NICE]
+						+ kcpustat_cpu(i).cpustat[CPUTIME_SYSTEM]
+						+ kcpustat_cpu(i).cpustat[CPUTIME_IRQ]
+						+ kcpustat_cpu(i).cpustat[CPUTIME_SOFTIRQ]
+						+ kcpustat_cpu(i).cpustat[CPUTIME_GUEST];
+
+					kcpustat->cpustat[CPUTIME_USER] = 0;
+					kcpustat->cpustat[CPUTIME_SYSTEM] = 0;
+					kcpustat->cpustat[CPUTIME_NICE] = 0;
+					kcpustat->cpustat[CPUTIME_IRQ] = 0;
+					kcpustat->cpustat[CPUTIME_SOFTIRQ] = 0;
+					kcpustat->cpustat[CPUTIME_GUEST] = 0;
+				}
+			}
+		}
+	}
+#endif
 
 	mutex_lock(&callback_mutex);
 	cpumask_copy(cs->cpus_allowed, trialcs->cpus_allowed);
@@ -1353,14 +1405,10 @@ static int fmeter_getrate(struct fmeter *fmp)
 	return val;
 }
 
-/* Protected by cgroup_lock */
-static cpumask_var_t cpus_attach;
-
 /* Called by cgroups to determine if a cpuset is usable; cgroup_mutex held */
 static int cpuset_can_attach(struct cgroup_subsys *ss, struct cgroup *cont,
-			     struct task_struct *tsk, bool threadgroup)
+			     struct task_struct *tsk)
 {
-	int ret;
 	struct cpuset *cs = cgroup_cs(cont);
 
 	if (cpumask_empty(cs->cpus_allowed) || nodes_empty(cs->mems_allowed))
@@ -1377,29 +1425,42 @@ static int cpuset_can_attach(struct cgroup_subsys *ss, struct cgroup *cont,
 	if (tsk->flags & PF_THREAD_BOUND)
 		return -EINVAL;
 
-	ret = security_task_setscheduler(tsk, 0, NULL);
-	if (ret)
-		return ret;
-	if (threadgroup) {
-		struct task_struct *c;
-
-		rcu_read_lock();
-		list_for_each_entry_rcu(c, &tsk->thread_group, thread_group) {
-			ret = security_task_setscheduler(c, 0, NULL);
-			if (ret) {
-				rcu_read_unlock();
-				return ret;
-			}
-		}
-		rcu_read_unlock();
-	}
 	return 0;
 }
 
-static void cpuset_attach_task(struct task_struct *tsk, nodemask_t *to,
-			       struct cpuset *cs)
+static int cpuset_can_attach_task(struct cgroup *cgrp, struct task_struct *task)
+{
+	return security_task_setscheduler(task, 0, NULL);
+}
+
+/*
+ * Protected by cgroup_lock. The nodemasks must be stored globally because
+ * dynamically allocating them is not allowed in pre_attach, and they must
+ * persist among pre_attach, attach_task, and attach.
+ */
+static cpumask_var_t cpus_attach;
+static nodemask_t cpuset_attach_nodemask_from;
+static nodemask_t cpuset_attach_nodemask_to;
+
+/* Set-up work for before attaching each task. */
+static void cpuset_pre_attach(struct cgroup *cont)
+{
+	struct cpuset *cs = cgroup_cs(cont);
+
+	if (cs == &top_cpuset)
+		cpumask_copy(cpus_attach, cpu_possible_mask);
+	else
+		guarantee_online_cpus(cs, cpus_attach);
+
+	guarantee_online_mems(cs, &cpuset_attach_nodemask_to);
+}
+
+/* Per-thread attachment work. */
+static void cpuset_attach_task(struct cgroup *cont, struct task_struct *tsk)
 {
 	int err;
+	struct cpuset *cs = cgroup_cs(cont);
+
 	/*
 	 * can_attach beforehand should guarantee that this doesn't fail.
 	 * TODO: have a better way to handle failure here
@@ -1407,46 +1468,29 @@ static void cpuset_attach_task(struct task_struct *tsk, nodemask_t *to,
 	err = set_cpus_allowed_ptr(tsk, cpus_attach);
 	WARN_ON_ONCE(err);
 
-	cpuset_change_task_nodemask(tsk, to);
+	cpuset_change_task_nodemask(tsk, &cpuset_attach_nodemask_to);
 	cpuset_update_task_spread_flag(cs, tsk);
-
 }
 
 static void cpuset_attach(struct cgroup_subsys *ss, struct cgroup *cont,
-			  struct cgroup *oldcont, struct task_struct *tsk,
-			  bool threadgroup)
+			  struct cgroup *oldcont, struct task_struct *tsk)
 {
-	nodemask_t from, to;
 	struct mm_struct *mm;
 	struct cpuset *cs = cgroup_cs(cont);
 	struct cpuset *oldcs = cgroup_cs(oldcont);
 
-	if (cs == &top_cpuset) {
-		cpumask_copy(cpus_attach, cpu_possible_mask);
-	} else {
-		guarantee_online_cpus(cs, cpus_attach);
-	}
-	guarantee_online_mems(cs, &to);
-
-	/* do per-task migration stuff possibly for each in the threadgroup */
-	cpuset_attach_task(tsk, &to, cs);
-	if (threadgroup) {
-		struct task_struct *c;
-		rcu_read_lock();
-		list_for_each_entry_rcu(c, &tsk->thread_group, thread_group) {
-			cpuset_attach_task(c, &to, cs);
-		}
-		rcu_read_unlock();
-	}
-
-	/* change mm; only needs to be done once even if threadgroup */
-	from = oldcs->mems_allowed;
-	to = cs->mems_allowed;
+	/*
+	 * Change mm, possibly for multiple threads in a threadgroup. This is
+	 * expensive and may sleep.
+	 */
+	cpuset_attach_nodemask_from = oldcs->mems_allowed;
+	cpuset_attach_nodemask_to = cs->mems_allowed;
 	mm = get_task_mm(tsk);
 	if (mm) {
-		mpol_rebind_mm(mm, &to);
+		mpol_rebind_mm(mm, &cpuset_attach_nodemask_to);
 		if (is_memory_migrate(cs))
-			cpuset_migrate_mm(mm, &from, &to);
+			cpuset_migrate_mm(mm, &cpuset_attach_nodemask_from,
+					  &cpuset_attach_nodemask_to);
 		mmput(mm);
 	}
 }
@@ -1896,6 +1940,9 @@ struct cgroup_subsys cpuset_subsys = {
 	.create = cpuset_create,
 	.destroy = cpuset_destroy,
 	.can_attach = cpuset_can_attach,
+	.can_attach_task = cpuset_can_attach_task,
+	.pre_attach = cpuset_pre_attach,
+	.attach_task = cpuset_attach_task,
 	.attach = cpuset_attach,
 	.populate = cpuset_populate,
 	.post_clone = cpuset_post_clone,
@@ -2075,31 +2122,20 @@ static void scan_for_empty_cpusets(struct cpuset *root)
  * (of no affect) on systems that are actively using CPU hotplug
  * but making no active use of cpusets.
  *
+ * The only exception to this is suspend/resume, where we don't
+ * modify cpusets at all.
+ *
  * This routine ensures that top_cpuset.cpus_allowed tracks
- * cpu_online_map on each CPU hotplug (cpuhp) event.
+ * cpu_active_mask on each CPU hotplug (cpuhp) event.
  *
  * Called within get_online_cpus().  Needs to call cgroup_lock()
  * before calling generate_sched_domains().
  */
-static int cpuset_track_online_cpus(struct notifier_block *unused_nb,
-				unsigned long phase, void *unused_cpu)
+void cpuset_update_active_cpus(void)
 {
 	struct sched_domain_attr *attr;
 	struct cpumask *doms;
 	int ndoms;
-
-	switch (phase) {
-	case CPU_ONLINE:
-	case CPU_ONLINE_FROZEN:
-	case CPU_DOWN_PREPARE:
-	case CPU_DOWN_PREPARE_FROZEN:
-	case CPU_DOWN_FAILED:
-	case CPU_DOWN_FAILED_FROZEN:
-		break;
-
-	default:
-		return NOTIFY_DONE;
-	}
 
 	cgroup_lock();
 	mutex_lock(&callback_mutex);
@@ -2111,8 +2147,6 @@ static int cpuset_track_online_cpus(struct notifier_block *unused_nb,
 
 	/* Have scheduler rebuild the domains */
 	partition_sched_domains(ndoms, doms, attr);
-
-	return NOTIFY_OK;
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG
@@ -2161,7 +2195,6 @@ void __init cpuset_init_smp(void)
 	cpumask_copy(top_cpuset.cpus_allowed, cpu_active_mask);
 	top_cpuset.mems_allowed = node_states[N_HIGH_MEMORY];
 
-	hotcpu_notifier(cpuset_track_online_cpus, 0);
 	hotplug_memory_notifier(cpuset_track_online_nodes, 10);
 }
 
@@ -2183,6 +2216,23 @@ void cpuset_cpus_allowed(struct task_struct *tsk, struct cpumask *pmask)
 	guarantee_online_cpus(task_cs(tsk), pmask);
 	task_unlock(tsk);
 	mutex_unlock(&callback_mutex);
+}
+
+void get_tsk_cpu_allowed(struct task_struct *tsk, struct cpumask *pmask)
+{
+	struct cpuset *cs = NULL;
+
+	mutex_lock(&callback_mutex);
+	task_lock(tsk);
+	cs = task_cs(tsk);
+	if (cs)
+		cpumask_and(pmask, cs->cpus_allowed, cpu_possible_mask);
+	else
+		cpumask_copy(pmask, cpu_possible_mask);
+	task_unlock(tsk);
+	mutex_unlock(&callback_mutex);
+
+	return;
 }
 
 int cpuset_cpus_allowed_fallback(struct task_struct *tsk)

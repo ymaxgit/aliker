@@ -30,6 +30,8 @@
 #define GTP_SP_NUM		7
 #define GTP_PC_NUM		16
 #endif
+
+#define GTP_X86_NEED_ADJUST_PC(gts)	(!(gts)->step && !(gts)->hwb)
 #endif
 
 #ifdef CONFIG_MIPS
@@ -86,10 +88,33 @@ struct gtp_trace_s {
 	struct gtp_rb_s			*next;
 	u64				id;
 #endif
+
+	/* Not 0 if this is step action.
+	   Its value is step number that need exec (include current step).
+	   For example, if a tracepoint have 1 step,
+	   its step action gts->step will be 1.  */
 	int				step;
+
 	struct kretprobe_instance	*ri;
 	int				*run;
 	struct timespec			xtime;
+
+	/* $watch_id will set to WATCH_TPE.  */
+	struct gtp_entry		*watch_tpe;
+	/* $watch_type will set to WATCH_TYPE.  */
+	int				watch_type;
+	/* $watch_size will set to WATCH_SIZE.  */
+	int				watch_size;
+	/* The return of $watch_start or $watch_stop.
+	   0 is success.  */
+	int				watch_start_ret;
+	int				watch_stop_ret;
+
+	/* If this is a session is for a hardware breakpoint.
+	   HWB point to the struct.
+	   If not, it will set to NULL.  */
+	struct gtp_hwb_s		*hwb;
+
 	int64_t				printk_tmp;
 	unsigned int			printk_level;
 	unsigned int			printk_format;

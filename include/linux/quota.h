@@ -51,6 +51,12 @@
 	"undefined", \
 };
 
+#define SBTR_QUOTA_MASK		0xff000000
+#define SBTR_QUOTA_SHIFT	24
+#define SBTR_MIN_ID		(1 << SBTR_QUOTA_SHIFT)
+#define IS_SBTR_ID(id)  (((id) >= SBTR_MIN_ID || (id) == 0) ? 1 : 0)
+#define SUBTREE_PROC_ENTRY "dirquota"
+
 /*
  * Command definitions for the 'quotactl' system call.
  * The commands are broken into a main command defined below

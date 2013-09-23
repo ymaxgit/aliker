@@ -3,7 +3,7 @@
 # This script to get the GDB tracepoint RSP package and save it
 # to ./gtpstart and ./gtpstop file.
 # GPL
-# Copyright(C) Hui Zhu (teawater@gmail.com), 2010, 2011
+# Copyright(C) KGTP team (https://code.google.com/p/kgtp/), 2010-2013
 
 binmode STDIN, ":raw";
 $| = 1;
@@ -55,13 +55,14 @@ while (1) {
 			open(STARTFILE, ">./gtpstart");
 			print STARTFILE '$QTDisconnected:1#e3'."\n";
 			if ($circular) {
-				print STARTFILE '$QTBuffer:circular:1#f9'."\n";
+				print STARTFILE '$QTBuffer:circular:1#f9';
 			} else {
-				print STARTFILE '$QTBuffer:circular:0#f8'."\n";
+				print STARTFILE '$QTBuffer:circular:0#f8';
 			}
 		} elsif ($line eq '$qTfV#81') {
 			print '$18:0:1:6972715f636f756e74#ca';
 		} elsif ($line eq '$qTsV#8e') {
+			#Support from GTP_VAR_VERSION_ID(0x1) to GTP_STEP_ID_ID(0x2d)
 			if ($var_count == 0) {
 				print '$17:0:1:736f66746972715f636f756e74#a6';
 			} elsif ($var_count == 1) {
@@ -77,11 +78,11 @@ while (1) {
 			} elsif ($var_count == 6) {
 				print '$11:0:1:6b726574#48';
 			} elsif ($var_count == 7) {
-				print '$10:0:1:705f70655f656e#e5';?
+				print '$10:0:1:705f70655f656e#e5';
 			} elsif ($var_count == 8) {
 				print '$f:0:1:6370755f6e756d626572#29';
 			} elsif ($var_count == 9) {
-				print '$e:0:1:6e6f5f73656c665f7472616365#ca';
+				print '$e:0:1:73656c665f7472616365#f8';
 			} elsif ($var_count == 10) {
 				print '$d:0:1:64756d705f737461636b#22';
 			} elsif ($var_count == 11) {
@@ -124,6 +125,34 @@ while (1) {
 				print '$1e:0:1:656e61626c65#7e';
 			} elsif ($var_count == 30) {
 				print '$18:0:1:6972715f636f756e74#ca';
+			} elsif ($var_count == 31) {
+				print '$20:0:1:77617463685f737461746963#a2';
+			} elsif ($var_count == 32) {
+				print '$21:0:1:77617463685f74797065#d1';
+			} elsif ($var_count == 33) {
+				print '$22:1:1:77617463685f73697a65#02';
+			} elsif ($var_count == 34) {
+				print '$23:0:1:77617463685f7365745f6964#da';
+			} elsif ($var_count == 35) {
+				print '$24:0:1:77617463685f7365745f61646472#a6';
+			} elsif ($var_count == 36) {
+				print '$25:0:1:77617463685f7374617274#38';
+			} elsif ($var_count == 37) {
+				print '$26:0:1:77617463685f73746f70#01';
+			} elsif ($var_count == 38) {
+				print '$27:0:1:77617463685f74726163655f6e756d#75';
+			} elsif ($var_count == 39) {
+				print '$28:0:1:77617463685f74726163655f61646472#79';
+			} elsif ($var_count == 40) {
+				print '$29:0:1:77617463685f61646472#d0';
+			} elsif ($var_count == 41) {
+				print '$2a:0:1:77617463685f76616c#c1';
+			} elsif ($var_count == 42) {
+				print '$2b:0:1:77617463685f636f756e74#cc';
+			} elsif ($var_count == 43) {
+				print '$2c:0:1:737465705f636f756e74#5d';
+			} elsif ($var_count == 44) {
+				print '$2d:0:1:737465705f6964#c0';
 			} else {
 				print '$l#6c';
 			}
@@ -136,7 +165,9 @@ while (1) {
 	if ($status == 1) {
 		print '$OK#9a';
 
-		print STARTFILE $line."\n";
+		if (length($line) > 0) {
+			print STARTFILE "\n".$line;
+		}
 
 		if ($line eq '$QTStart#b3') {
 			$status = 0;
@@ -144,7 +175,7 @@ while (1) {
 			close(STARTFILE);
 
 			open(STOPFILE, ">./gtpstop");
-			print STOPFILE '$QTStop#4b'."\n";
+			print STOPFILE '$QTStop#4b';
 			close(STOPFILE);
 		}
 	}

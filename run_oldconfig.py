@@ -1,0 +1,1 @@
+/data1/taobao-kernel/scripts/run_oldconfig.py

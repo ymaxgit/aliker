@@ -3,15 +3,23 @@
 		By Hui Zhu <teawater@gmail.com>
 		https://code.google.com/p/kgtp/wiki/HOWTOCN
 
-Update in 2012-09-20
+Update in 2013-05-08
 
 什么是KGTP
 需要帮助或者汇报问题
+GDB调试普通程序和KGTP的区别表
 使用KGTP前的准备工作
 Linux内核
 如果你的系统内核是自己编译的
 如果你的系统内核是发行版自带的
+Ubuntu
+Fedora
+其他系统
 确定Linux内核调试镜像是正确的
+当前Linux内核调试镜像在哪
+使用/proc/kallsyms
+使用linux_banner
+处理不能在"/sys/"或者"/sys/kernel/debug/"找到任何文件的问题
 处理Linux内核调试镜像地址信息和Linux内核执行时不同的问题
 取得KGTP
 通过http下载KGTP
@@ -32,19 +40,28 @@ GDB在本地主机上
 增加模块的符号信息到GDB
 如何使用getmod.py
 如何使用getmod
-直接访问内存
+在普通模式直接访问当前值
+Linux内核的内存
+用户程序的内存
+trace状态变量
 GDB tracepoint
 设置tracepint
+这个函数确实存在但是设置tracepoint到上面会失败如何处理
 如何设置条件tracepoint
+如何处理错误 "Unsupported operator (null) (52) in expression."
 actions [num]
+collect expr1, expr2, ...
+teval expr1, expr2, ...
+while-stepping n
 启动和停止 tracepoint
 Enable 和 disable tracepoint
-用"tfind"选择trace帧缓存里面的条目
+用tfind选择trace帧缓存里面的条目
+如何处理错误 "No such file or directory." 或者 "没有那个文件或目录."
+保存trace帧信息到一个文件中
 显示和存储tracepoint
 删除tracepoint
 用tracepoint从内核中某点取得寄存器信息
 用tracepoint从内核中某点取得变量的值
-如何处理 "Unsupported operator (null) (52) in expression."
 显示当前这一条trace缓存里存储的所有信息
 取得 tracepoint 的状态
 设置trace缓存为循环缓存
@@ -53,24 +70,28 @@ kprobes-optimization和tracepoint的执行速度
 如果使用trace状态变量
 普通trace状态变量
 Per_cpu trace状态变量
+如何定义
+例子1
+例子2
 特殊trace状态变量 $current_task，$current_task_pid，$current_thread_info，$cpu_id，$dump_stack，$printk_level，$printk_format，$printk_tmp，$clock，$hardirq_count，$softirq_count 和 $irq_count
-特殊trace状态变量 $no_self_trace
+特殊trace状态变量 $self_trace
 用$kret trace函数的结尾
 用 $ignore_error 和 $last_errno 忽略tstart的错误
 使用 $cooked_clock 和 $cooked_rdtsc 取得不包含KGTP运行时间的时间信息
 使用 $xtime_sec 和 $xtime_nsec 取得 timespec
 如何 backtrace (stack dump)
-通过$bt收集栈并用GDB命令"backtrace"进行分析
+通过$bt收集栈并用GDB命令backtrace进行分析
 用 $_ret 来取得当前函数的调用函数的栈
 用 $dump_stack 输出栈分析到printk里
-如何使用性能计数器
-定义一个perf event trace状态变量
-定义一个per_cpu perf event trace状态变量
-perf event的类型和配置
-用$p_pe_en打开和关闭一个CPU上所有的perf event
-用来帮助设置和取得perf event trace状态变量的GDB脚本
 如何让tracepoint直接输出信息
 切换collect为直接输出数据
+如何用watch tracepoint控制硬件断点记录内存访问
+watch tracepoint的trace状态变量
+静态watch tracepoint
+动态watch tracepoint
+使用while-stepping让Linux内核做单步
+如何使用 while-stepping
+读while-stepping的traceframe
 如何显示被优化掉的变量值
 升级你的GCC
 如何取得函数指针指向的函数
@@ -90,11 +111,17 @@ perf event的类型和配置
 API
 例子
 如何使用
+如何使用性能计数器
+定义一个perf event trace状态变量
+定义一个per_cpu perf event trace状态变量
+perf event的类型和配置
+用$p_pe_en打开和关闭一个CPU上所有的perf event
+用来帮助设置和取得perf event trace状态变量的GDB脚本
 什么是KGTP
 KGTP 是一个 灵活 轻量级 实时 Linux 调试器 和 跟踪器 。
 使用KGTP 不需要 在Linux内核上打PATCH或者重新编译，只要编译KGTP模块并insmod就可以。
 
-其让Linux内核提供一个远程GDB调试接口，于是在本地或者远程的主机上的GDB可以在不需要停止内核的情况下用GDB tracepoint和其他一些功能 调试 和 跟踪 Linux。
+其让Linux内核提供一个远程GDB调试接口，于是在本地或者远程的主机上的GDB可以在不需要停止内核的情况下用GDB tracepoint和其他一些功能 调试 和 跟踪 Linux内核和应用程序。
 即使板子上没有GDB而且其没有可用的远程接口，KGTP也可以用离线调试的功能调试内核（见http://code.google.com/p/kgtp/wiki/HOWTOCN#/sys/kernel/debug/gtpframe和离线调试）。
 
 KGTP支持 X86-32 ， X86-64 ， MIPS 和 ARM 。
@@ -109,6 +136,24 @@ KGTP新用户可以去看一下 Quickstart 。
 你可以把问题发到 http://code.google.com/p/kgtp/issues/list 或者写信到 kgtp@freelists.org 或者写信到 teawater@gmail.com 。
 KGTP小组将尽全力帮助你。
 
+GDB调试普通程序和KGTP的区别表
+这个表是给在使用过GDB调试程序的人准备的，他可以帮助你理解和记住KGTP的功能。
+
+功能	GDB调试普通程序	GDB控制KGTP调试Linux内核
+准备工作	 系统里安装了GDB。
+程序用 "-g"选项编译。	 因为使用了一些GDB中的新功能，所以KGTP需要和GDB 7.3或者更新的版本。如果你的系统不提供这么新版本的GDB，你可以到http://code.google.com/p/gdbt/取得新版本GDB的静态编译版本，它可以在大部分Linux上使用。同时你可以在这里取得一步一步编译新版本GDB的介绍。
+你还需要做一些Linux内核和KGTP的准备工作，请到 http://code.google.com/p/kgtp/wiki/HOWTOCN#使用KGTP前的准备工作 取得如果做的介绍。
+Attach	 使用命令"gdb -p pid"或者GDB命令"attach pid"可以attach系统中的某个程序.	 需要先insmod gtp.ko，请看 https://code.google.com/p/kgtp/wiki/HOWTOCN#执行。
+然后让GDB连接KGTP,请看https://code.google.com/p/kgtp/wiki/HOWTOCN#让GDB连接到KGTP。
+请 注意 GDB连接到KGTP以后，Linux内核不会停止。
+Breakpoints	 GDB命令"b place_will_stop"，让程序在执行这个命令后执行，则程序将停止在设置这个断点的地方。	 KGTP不支持断点但是支持tracepoint。Tracepoints可以被看作一种特殊的断点。其可以设置在Linux kernel中的一些地方然后定义一些命令到它的action中。当tracepoint开始的时候，他们将会在内核执行到这些地方的时候执行这些命令。当tracepoint停止的时候，你可以像断点停止程序后你做的那样用GDB命令分析tracepoint得到的数据。 区别 是断点会停止程序但是KGTP中的tracepoint不会。 请到 https://code.google.com/p/kgtp/wiki/HOWTOCN#GDB_tracepoint 看如何使用它。
+读Memory	 GDB停止程序后(也许不需要)，它可以用GDB命令"print"或者"x"等应用程序的内存。	 你可以在tracepoint中设置特殊的action收集内存到traceframe中，在tracepoint停止后取得他们的值。https://code.google.com/p/kgtp/wiki/HOWTOCN#collect_expr1,_expr2,_... http://code.google.com/p/kgtp/wiki/HOWTOCN#用tfind选择trace帧缓存里面的条目 
+或者你可以在内核或者应用程序执行的时候直接读他们的内存。https://code.google.com/p/kgtp/wiki/HOWTOCN#在普通模式直接访问当前值
+Step 和 continue	 GDB可以用命令"continue"继续程序的执行，用CTRL-C停止其。	 KGTP不会停止Linux内核，但是tracepoint可以开始和停止。https://code.google.com/p/kgtp/wiki/HOWTOCN#启动和停止_tracepoint 
+或者用 while-stepping tracepoint记录一定次数的single-stepping然后让KGTP切换到回放模式。这样其就支持执行和方向执行命令了。 https://code.google.com/p/kgtp/wiki/HOWTOCN#使用while-stepping让Linux内核做单步
+Backtrace	 GDB可以用命令"backtrace"打印全部调用栈。	 KGTP也可以。https://code.google.com/p/kgtp/wiki/HOWTOCN#如何_backtrace_(stack_dump)
+Watchpoint	 GDB可以用watchpoint让程序在某些内存访问发生的时候停止。	 KGTP可以用watch tracepoint记录内存访问。 https://code.google.com/p/kgtp/wiki/HOWTOCN#如何用watch_tracepoint控制硬件断点记录内存访问
+调用函数	 GDB可以用命令"call function(xx,xx)"调用程序中的函数。	 KGTP可以用插件调用内核中的函数。https://code.google.com/p/kgtp/wiki/HOWTOCN#如何增加用C写的插件
 使用KGTP前的准备工作
 Linux内核
 如果你的系统内核是自己编译的
@@ -142,10 +187,11 @@ sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 428D7C01
 运行：
 sudo apt-get update
 
-2) 安装Linux内核调试镜像。
+2) 安装Linux内核调试镜像
 
 sudo apt-get install linux-image-$(uname -r)-dbgsym
 于是你可以在"/usr/lib/debug/boot/vmlinux-$(uname -r)"找到内核调试镜像。
+请 注意 当内核更新的时候这一步 安装Linux内核调试镜像 需要再做一次。
 
 安装内核头文件包
 sudo apt-get install linux-headers-generic
@@ -157,6 +203,8 @@ sudo mkdir -p /build/buildd/
 sudo tar vxjf /usr/src/linux-source-$(uname -r | sed 's/-.*//').tar.bz2 -C /build/buildd/
 sudo rm -rf /build/buildd/linux-$(uname -r | sed 's/-.*//')
 sudo mv /build/buildd/linux-source-$(uname -r | sed 's/-.*//') /build/buildd/linux-$(uname -r | sed 's/-.*//')
+请 注意 当内核更新的时候这一步 安装内核源码 需要再做一次。
+
 Fedora
 安装Linux内核调试镜像
 sudo yum --enablerepo=fedora-debuginfo install kernel-debuginfo
@@ -172,6 +220,11 @@ sudo yum install kernel-devel-$(uname -r)
 有2个方法进行检查，我建议2个方法都做一次来确保Linux内核调试镜像是正确的。 
 
 请 注意 如果你确定使用了正确的Linux内核调试镜像但是不能通过这个两个方法。请看 http://code.google.com/p/kgtp/wiki/HOWTOCN#处理Linux内核调试镜像地址信息和Linux内核执行时 。
+
+当前Linux内核调试镜像在哪
+在UBUNTU中，你可以在"/usr/lib/debug/boot/vmlinux-$(uname -r)"找到它。
+在Fedora中，你可以在"/usr/lib/debug/lib/modules/$(uname -r)/vmlinux"找到它。
+如果你自己编译的内核，你可以在内核编译目录找到vmlinux文件。
 
 使用/proc/kallsyms
 在运行着要trace的内核的系统上，用下面的命令取得sys_read和sys_write的地址：
@@ -203,6 +256,21 @@ Remote debugging using /sys/kernel/debug/gtp
 (gdb) p linux_banner
 $2 = "Linux version 3.4.0-rc4+ (teawater@teawater-Precision-M4600) (gcc version 4.6.3 (GCC) ) #3 SMP Tue Apr 24 13:29:05 CST 2012\n"
 这个linux_banner是KGTP正在trace的内核的内核信息，如果相同，则Linux内核调试镜像是正确的。
+
+处理不能在"/sys/"或者"/sys/kernel/debug/"找到任何文件的问题
+因为KGTP的接口是"/sys/kernel/debug/gtp"，所以如果"/sys/"或者"/sys/kernel/debug/"中找不到任何文件则KGTP将不能使用。
+
+如果你有这个问题，请先确定你的内核config打开了"Debug Filesystem"。http://code.google.com/p/kgtp/wiki/HOWTOCN#如果你的系统内核是自己编译的
+
+如果它以及被打开了，请用下面命令mount sysfs。
+
+sudo mount -t sysfs none /sys/
+然后你就能在"/sys/"找到文件。 
+
+请用下面命令mount debugfs。
+
+mount -t debugfs none /sys/kernel/debug/
+然后你就能在"/sys/kernel/debug/"找到文件。 
 
 处理Linux内核调试镜像地址信息和Linux内核执行时不同的问题
 在X86_32上，用 http://code.google.com/p/kgtp/wiki/HOWTOCN#确定Linux内核调试镜像是正确的 介绍的方法发现Linux内核调试镜像地址信息和Linux内核执行时不同，而且确定使用的Linux内核调试镜像是正确的。
@@ -289,7 +357,8 @@ sudo make dkms
 
 使用KGTP Linux内核patch
 大多数时候，你不需要KGTP patch，因为KGTP以一个LKM的形式编译安装更为方便。但是为了帮助人们集成KGTP到他们自己的内核树，KGTP也提供了patch. 在KGTP目录中：
-gtp_3.0_to_upstream.patch 是给Linux kernel 从3.0到upstream的patch。
+gtp_3.7_to_upstream.patch 是给Linux kernel 从3.7到upstream的patch。
+gtp_3.0_to_3.6.patch 是给Linux kernel 从3.0到3.6的patch。
 gtp_2.6.39.patch 是给Linux kernel 2.6.39的patch。
 gtp_2.6.33_to_2.6.38.patch 是给Linux kernel 从2.6.33到2.6.38的patch。
 gtp_2.6.20_to_2.6.32.patch 是给Linux kernel 从2.6.20到2.6.32的patch。
@@ -308,6 +377,8 @@ sudo modprobe gtp
 cd kgtp/
 sudo insmod gtp.ko
 让GDB连接到KGTP
+请 注意 让GDB打开正确的vmlinux文件非常重要。请到 http://code.google.com/p/kgtp/wiki/HOWTOCN#确定Linux内核调试镜像是正确的 去看下如何做。
+
 GDB在本地主机上
 sudo gdb ./vmlinux
 (gdb) target remote /sys/kernel/debug/gtp
@@ -355,25 +426,60 @@ add symbol table from file "/lib/modules/2.6.39-rc5+/kernel/fs/nls/nls_iso8859-1
         .gnu.linkonce.this_module_addr = 0xf80dea00
 #这条GDB命令后，所有Linux内核模块信息都被装载进GDB了。
 #After this GDB command, all the Linux Kernel module info is loaded into GDB.
-如果你使用远程调试或者离线调试，你可以需要修改基本目录。下面是一个例子： If you use remote debug or offline debug, maybe you need change the base directory. Following example is for it.
+如果你使用远程调试或者离线调试，你可以需要修改基本目录。下面是一个例子：
 
 #/home/teawater/kernel/b26是GDB所在主机上内核模块所在的路径
 sudo ./getmod -r /home/teawater/kernel/b26 >~/tmp/mi
-直接访问内存
-连接上KGTP以后，你可以直接访问大部分内存。
+在普通模式直接访问当前值
+在GDB连到KGTP上以后，如果没有用GDB命令"tfind"选择一条trace帧缓存里面的条目，GDB就处于 普通模式。于是你可以直接访问内存(Linux内核或者用户程序)的值和trace状态变量的值。
+如果你选择了一个trace帧条目，可以用GDB命令"tfind -1"返回到普通模式。请到http://code.google.com/p/kgtp/wiki/HOWTOCN#用tfind选择trace帧缓存里面的条目取得GDB命令"tfind"的更多信息。
+
+Linux内核的内存
 例如你可以用下面的命令访问"jiffies_64"：
 
 (gdb) p jiffies_64
 或者你可以用下面的命令访问"static LIST_HEAD(modules)"的第一条记录：
 
 (gdb) p *((struct module *)((char *)modules->next - ((size_t) &(((struct module *)0)->list))))
-Or you can access to the CPU0 memory info of "DEFINE_PER_CPU(struct device *, mce_device);": 或者你可以访问"DEFINE_PER_CPU(struct device *, mce_device);"CPU0的数据：
+或者你可以访问"DEFINE_PER_CPU(struct device *, mce_device);"CPU0的数据：
 
 p *(struct device *)(__per_cpu_offset[0]+(uint64_t)(&mce_device))
 如果想在用一个GDB命令显示多个变量，请使用下面的例子：
 
 (gdb) printf "%4d %4d %4d %4d %4d %4d %18d %lu\n", this_rq->cpu, this_rq->nr_running, this_rq->nr_uninterruptible, nr_active, calc_load_tasks->counter, this_rq->calc_load_active, delta, this_rq->calc_load_update
 2 1 0 0 0 0 673538312 717077240
+用户程序的内存
+KGTP可以不同停止应用层程序的情况下直接读取其内存，例如：
+
+#连接KGTP(这里和前面介绍的连接方法不同)
+(gdb) target extended-remote /sys/kernel/debug/gtp
+#增加一个新的inferior用来分析应用程序的信息。
+(gdb) add-inferior
+Added inferior 2
+#切换到这个inferior
+(gdb) inferior 2
+[Switching to inferior 2 [<null>] (<noexec>)]
+#转载这个程序的符号文件
+(gdb) file ~/kernel/svn/bak/a.out
+Reading symbols from /home/teawater/kernel/svn/bak/a.out...done.
+#attach到这个进程上(这不会停止这个程序)。
+(gdb) attach 10039
+Attaching to program: /home/teawater/kernel/svn/bak/a.out, Remote target
+Reading symbols from /lib/x86_64-linux-gnu/libc.so.6...(no debugging symbols found)...done.
+Loaded symbols for /lib/x86_64-linux-gnu/libc.so.6
+Reading symbols from /lib64/ld-linux-x86-64.so.2...(no debugging symbols found)...done.
+Loaded symbols for /lib64/ld-linux-x86-64.so.2
+0x0000000000000000 in ?? ()
+#于是可以读这个程序的内存
+(gdb) p c
+$3 = -1222013392
+(gdb) p c
+$4 = -590910451
+在这个例子中，我使用了一个多inferior命令。请到 http://sourceware.org/gdb/current/onlinedocs/gdb/Inferiors-and-Programs.html 去取得其更多相关信息。
+
+trace状态变量
+你可以使用和访问内存一样的命令访问TSV。 请到 http://code.google.com/p/kgtp/wiki/HOWTOCN#如果使用trace状态变量 取得更多TSV的信息。
+
 GDB tracepoint
 tracepoint就是GDB定义一些地址和一些动作。在tracepoint启动之后，当Linux内核执行到那些地址的时候，KGTP将执行这些动作(它们中的有些会收集数据并存入tracepoint帧缓冲)并把它们发给调试目标(KGTP)。而后，Linux内核将继续执行。
 KGTP提供了一些接口可以让GDB或者其他程序取出tracepoint帧缓冲的数据做分析。
@@ -417,6 +523,13 @@ $bpnum的值是最后一个GDB tracepoint的ID，所以你可以不取得tracepo
 
 (gdb) trace handle_irq
 (gdb) condition $bpnum (irq == 47)
+如何处理错误 "Unsupported operator (null) (52) in expression."
+如果你使用关于字符串的条件tracepoint，你在调用"tstart"的时候可能得到这个出错信息。
+你可以转化char为int来处理这个问题，例如：
+
+(gdb) p/x 'A'
+$4 = 0x41
+(gdb) condition 1 (buf[0] == 0x41)
 actions [num]
 这个命令将设置一组action当tracepoint num触发的时候执行。如果没有设置num则将设置action到最近创建的tracepoint上(因此你可以定义一个tracepoint然后直接输入actions而不需要参数)。然后就要在后面输入action，最后以end为结束。到目前为止，支持的action有collect，teval和while-stepping。
 
@@ -432,7 +545,7 @@ teval expr1, expr2, ...
 当tracepoint触发的时候，执行指定的表达式。这个命令可接受用逗号分割的一组列表。表达式的结果将被删除，所以最主要的作用是把值设置到trace状态变量中 (see http://code.google.com/p/kgtp/wiki/HOWTOCN#普通trace状态变量)，而不用想collect一样把这些值存到trace帧中。
 
 while-stepping n
-请到 http://code.google.com/p/kgtp/wiki/HOWTOCN#如果函数指针被优化掉了 去看如何使用它。
+请到 https://code.google.com/p/kgtp/wiki/HOWTOCN#使用while-stepping让Linux内核做单步 去看如何使用它。
 
 启动和停止 tracepoint
 tracepoint只有在用下面的GDB命令启动后才可以执行action：
@@ -444,12 +557,43 @@ tracepoint只有在用下面的GDB命令启动后才可以执行action：
 Enable 和 disable tracepoint
 和breakpoint一样，tracepoint可以使用GDB命令 "enable" 和 "disable"。但是请 注意 它们只在tracepoint停止的时候有效。
 
-用"tfind"选择trace帧缓存里面的条目
+用tfind选择trace帧缓存里面的条目
 tracepoint停止的时候，GDB命令"tfind"可以用来选择trace帧缓存里面的条目。
 当GDB在"tfind"模式的时候，其只能显示tracepoint action collect的存在于这个条目中的数据。所以GDB将输出一些错误信息如果想打印没有collect的数据例如函数的参数。这不是bug，不用担心。
 如果想选择下一个条目，可以再次使用命令"tfind"。还可以用"tfind 条目ID"去选择某个条目。
-要回到普通模式，请使用GDB命令"tfind -1"。 请到 http://sourceware.org/gdb/current/onlinedocs/gdb/tfind.html 取得它的详细信息。
+要回到普通模式(http://code.google.com/p/kgtp/wiki/HOWTOCN#在普通模式直接访问当前值)，请使用GDB命令"tfind -1"。 请到 http://sourceware.org/gdb/current/onlinedocs/gdb/tfind.html 取得它的详细信息。
 
+如何处理错误 "No such file or directory." 或者 "没有那个文件或目录."
+当GDB不能找到Linux内核源码的时候，其就会显示这个错误信息。 例如：
+
+(gdb) tfind 
+Found trace frame 0, tracepoint 1
+#0  vfs_read (file=0xffff8801b6c3a500, buf=0x3f588b8 <Address 0x3f588b8 out of bounds>, count=8192, 
+    pos=0xffff8801eee49f48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     /build/buildd/linux-3.2.0/fs/read_write.c: 没有那个文件或目录.
+你可以用GDB命令 "set substitute-path" 处理它。前面这个例子Linux内核源码在"/build/buildd/test/linux-3.2.0/"但是vmlinux让GDB在"/build/buildd/linux-3.2.0/"找内核远啊，你可以处理他们：
+
+(gdb) set substitute-path /build/buildd/linux-3.2.0/ /build/buildd/test/linux-3.2.0/
+(gdb) tfind 
+Found trace frame 1, tracepoint 1
+#0  vfs_read (file=0xffff8801c36e6400, buf=0x7fff51a8f110 <Address 0x7fff51a8f110 out of bounds>, count=16, 
+    pos=0xffff8801761dff48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     {
+GDB还提供其他的命令处理源码问题，请到http://sourceware.org/gdb/current/onlinedocs/gdb/Source-Path.html取得他们的介绍。
+
+保存trace帧信息到一个文件中
+/sys/kernel/debug/gtpframe是一个当KGTP停止时的tfine格式（GDB可以读取它）的接口。
+请 注意 有些"cp"不能很好的处理这个问题，可以用"cat /sys/kernel/debug/gtpframe > ./gtpframe"拷贝它。
+你可以在需要的时候打开文件gtpframe:
+
+(gdb) target tfile ./gtpframe
+Tracepoint 1 at 0xffffffff8114f3dc: file /home/teawater/kernel/linux-2.6/fs/readdir.c, line 24.
+Created tracepoint 1 for target's tracepoint 1 at 0xffffffff8114f3c0.
+(gdb) tfind 
+Found trace frame 0, tracepoint 1
+#0  vfs_readdir (file=0xffff880036e8f300, filler=0xffffffff8114f240 <filldir>, buf=0xffff880001e5bf38)
+    at /home/teawater/kernel/linux-2.6/fs/readdir.c:24
+24      {
 显示和存储tracepoint
 你可以用GDB命令"info tracepoints"显示所有的tracepoint。
 你可以用GDB命令"save tracepoints filename"保存所有的设置tracepoint的命令到文件filename里。于是你可以在之后用GDB命令"source filename"设置重新这些tracepoint。
@@ -542,13 +686,6 @@ Found trace frame 0, tracepoint 1
 $1 = 4297248706
 (gdb) p file->f_path.dentry->d_iname
 $1 = "b26", '\000' <repeats 28 times>
-如何处理 "Unsupported operator (null) (52) in expression."
-如果你使用关于字符串的条件tracepoint，你在调用"tstart"的时候可能得到这个出错信息。
-你可以转化char为int来处理这个问题，例如：
-
-(gdb) p/x 'A'
-$4 = 0x41
-(gdb) condition 1 (buf[0] == 0x41)
 显示当前这一条trace缓存里存储的所有信息
 在用"tfind"选择好一个条目后，你可以用"tdump"。
 
@@ -586,7 +723,8 @@ debug.kprobes-optimization = 1
 
 如果使用trace状态变量
 http://sourceware.org/gdb/current/onlinedocs/gdb/Trace-State-Variables.html
-Tracepoint 有一些变量。这些变量可以被直接trace或者在tracepoint条件中使用。
+trace状态变量简称TSV。
+TSV可以在tracepoint action和condition中被访问，并且可以直接被GDB命令访问。
 请 注意 GDB 7.2.1和更晚的版本直接访问trace状态变量，比他们老的GDB只能通过命令"info tvariables"取得trace状态变量的值。
 
 普通trace状态变量
@@ -782,17 +920,15 @@ $c0             0           3255
 $c1             0           1904     
 sys_read() 在CPU0上被执行了3255次，CPU1上执行了1904次。请 注意 这个例子只是为了显示如何使用$cpu_id，实际上用per_cpu trace状态变量写更好。
 
-特殊trace状态变量 $no_self_trace
-$no_self_trace和前面介绍的特殊trace状态变量不同，它是用来控制tracepoint的行为的。
-如果一个tracepoint包含一个访问到$no_self_trace的action，则当当前task是KGTP自己的进程（GDB，netcat，getframe或者其他访问KGTP接口的进程）的时候，其将不进行记录。
-例如，如果你要记录vfs_read或者其他有进程上下文的东西时候而且你不想trace KGTP自己的进程的时候，增加下面的命令到action里：
+特殊trace状态变量 $self_trace
+$self_trace和前面介绍的特殊trace状态变量不同，它是用来控制tracepoint的行为的。
+默认情况下，tracepoint被触发后，如果current_task是KGTP自己的进程（GDB，netcat，getframe或者其他访问KGTP接口的进程）的时候，其将不执行任何actions。
+如果你想让tracepoint actions和任何task的时候都执行，请包含一个包含一个访问到$self_trace的命令到actions中，也就是说增加下面的命令到actions中：
 
->collect $no_self_trace
-请 注意 不和进程上下文（Irq handler, softirq）有关的部分不需要设置这个变量。
-
+>teval $self_trace=0
 用$kret trace函数的结尾
 有时，因为内核是用优化编译的，所以在函数结尾设置tracepoint有时很困难。这时你可以用$kret帮助你。
-$kret是一个类似$no_self_trace的特殊trace状态变量。当你在tracepoint action里设置它的值的时候，这个tracepoint将用kretprobe而不是kprobe注册。于是其就可以trace一个函数的结尾。
+$kret是一个类似$self_trace的特殊trace状态变量。当你在tracepoint action里设置它的值的时候，这个tracepoint将用kretprobe而不是kprobe注册。于是其就可以trace一个函数的结尾。
 请 注意 这个tracepoint 必须用 "function_name" 的格式设置在函数的第一个地址上。
 
 下面的部分是一个例子：
@@ -824,7 +960,7 @@ $xtime_nsec 将返回timespec纳秒的部分。
 如何 backtrace (stack dump)
 每次你的程序做一个函数调用的时候， 这次调用的信息就会生成。这些信息包括调用函数的地址，调用参数，局部变量的值。这些信息被存储在我们称为栈帧的地方，栈帧是从调用栈中分配而来。
 
-通过$bt收集栈并用GDB命令"backtrace"进行分析
+通过$bt收集栈并用GDB命令backtrace进行分析
 因为这个方法更快（因为在trace的时候只收集）而且可以分析出大部分的调用栈中的信息（前面介绍的栈信息都可以分析出来），所以时间你使用这个方法做栈分析。
 首先我们需要在tracepoint action中增加命令收集栈。
 GDB收集栈的通常命令是： 在x86_32, 下面的命令将收集512字节的栈内容。
@@ -972,161 +1108,6 @@ trace vfs_readdir
 [22779.208137]  [<c05b97cf>] atomic_notifier_call_chain+0x1f/0x30
 [22779.208140]  [<c05b980d>] notify_die+0x2d/0x30
 [22779.208142]  [<c05b71c5>] do_int3+0x35/0xa0
-如何使用性能计数器
-性能计数器是大部分现代CPU都有的特殊硬件寄存器。这些寄存器对一些硬件事件进行计数：例如指令执行数量，cachemisses数量，分支预测失败数，而且这些计数不会让应用程序或者内核变慢。其还可以设置到达一定的值的时候发生中断，这些就可以用来分析在某CPU上执行程序的性能。
-Linux性能计数器子系统perf event可以用来取得性能计数器的值。你可以用KGTP perf event trace状态变量访问这些值。
-请读内核目录里的tools/perf/design.txt文件取得perf event的更多信息。
-
-定义一个perf event trace状态变量
-访问一个性能计数器需要定义下面的trace状态变量：
-
-"pe_cpu_"+tv_name       定义性能计数器的CPU ID。
-"pe_type_"+tv_name      定义性能计数器的类型。
-"pe_config_"+tv_name    定义性能计数器的配置。
-"pe_en_"+tv_name        定义性能计数器的启动开关。
-                        默认情况下性能计数器是关闭的。
-"pe_val_"+tv_name       访问这个变量能取得性能计数器的值。
-定义一个per_cpu perf event trace状态变量
-定义一个per_cpu perf event trace状态变量和http://code.google.com/p/kgtp/wiki/HOWTOCN#Per_cpu_trace状态变量一样。
-
-"p_pe_"+perf_event type+string+CPU_id
-请 注意 如果定义一个per_cpu perf event trace状态变量，就不需要在定义cpu id("pe_cpu")因为KGTP已经取得了CPU的ID。
-
-perf event的类型和配置
-类型可以是：
-
-0       PERF_TYPE_HARDWARE
-1       PERF_TYPE_SOFTWARE
-2       PERF_TYPE_TRACEPOINT
-3       PERF_TYPE_HW_CACHE
-4       PERF_TYPE_RAW
-5       PERF_TYPE_BREAKPOINT
-如果类型是0(PERF_TYPE_HARDWARE)，配置可以是：
-
-0       PERF_COUNT_HW_CPU_CYCLES
-1       PERF_COUNT_HW_INSTRUCTIONS
-2       PERF_COUNT_HW_CACHE_REFERENCES
-3       PERF_COUNT_HW_CACHE_MISSES
-4       PERF_COUNT_HW_BRANCH_INSTRUCTIONS
-5       PERF_COUNT_HW_BRANCH_MISSES
-6       PERF_COUNT_HW_BUS_CYCLES
-7       PERF_COUNT_HW_STALLED_CYCLES_FRONTEND
-8       PERF_COUNT_HW_STALLED_CYCLES_BACKEND
-
-如果类型是3(PERF_TYPE_HW_CACHE)，配置要分为3部分： 第一部分是cache id，其在设置进配置的时候需要 << 0：
-
-0       PERF_COUNT_HW_CACHE_L1D
-1       PERF_COUNT_HW_CACHE_L1I
-2       PERF_COUNT_HW_CACHE_LL
-3       PERF_COUNT_HW_CACHE_DTLB
-4       PERF_COUNT_HW_CACHE_ITLB
-5       PERF_COUNT_HW_CACHE_BPU
-第二部分是cache op id，其在设置进配置的时候需要 << 8：
-
-0       PERF_COUNT_HW_CACHE_OP_READ
-1       PERF_COUNT_HW_CACHE_OP_WRITE
-2       PERF_COUNT_HW_CACHE_OP_PREFETCH
-第三部分是cache op result id，其在设置进配置的时候需要 << 16：
-
-0       PERF_COUNT_HW_CACHE_RESULT_ACCESS
-1       PERF_COUNT_HW_CACHE_RESULT_MISS
-如果你想取得PERF_COUNT_HW_CACHE_L1I(1), PERF_COUNT_HW_CACHE_OP_WRITE(1) and PERF_COUNT_HW_CACHE_RESULT_MISS(1)你需要使用：
-
-(gdb) tvariable $pe_config_cache=1 | (1 << 8) | (1 << 16)
-内核目录中的tools/perf/design.txt是关于perf event的类型和配置。
-
-用$p_pe_en打开和关闭一个CPU上所有的perf event
-我认为取得一段代码的性能计数器信息比较好的办法是在函数开头打开计数器在函数结束的时候关闭计数器。你可以用"pe_en"设置他们，但是如果你有多个perf event trace状态变量的时候，这样会让tracepoint action很大。$p_pe_en就是处理这种问题的。 你可以打开所有perf event trace状态变量在当前CPU上用下面的action：
-
->teval $p_pe_en=1
-设置$p_pe_en为0来关闭他们。
-
->teval $p_pe_en=0
-用来帮助设置和取得perf event trace状态变量的GDB脚本
-下面这个GDB脚本定义了2个命令dpe和spe来帮助定义和显示perf event trace状态变量。
-你可以把他们存在~/.gdbinit或者你自己的tracepoint脚本中。于是你就可以在GDB中直接使用这2个命令。
-
-define dpe
-  if ($argc < 2)
-    printf "Usage: dpe pe_type pe_config [enable]\n"
-  end
-  if ($argc >= 2)
-    eval "tvariable $p_pe_val_%d%d_c",$arg0, $arg1
-    eval "tvariable $p_pe_en_%d%d_c",$arg0, $arg1
-    set $tmp=0
-    while $tmp<$cpu_number
-      eval "tvariable $p_pe_type_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg0
-      eval "tvariable $p_pe_config_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg1
-      eval "tvariable $p_pe_val_%d%d_c%d=0",$arg0, $arg1, $tmp
-      if ($argc >= 3)
-        eval "tvariable $p_pe_en_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg2
-      end
-      set $tmp=$tmp+1
-    end
-  end
-end
-
-document dpe
-Usage: dpe pe_type pe_config [enable]
-end
-
-define spe
-  if ($argc != 2 && $argc != 3)
-    printf "Usage: spe pe_type pe_config [cpu_id]\n"
-  end
-  if ($argc == 2)
-    set $tmp=0
-    while $tmp<$cpu_number
-      eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $tmp
-      set $tmp=$tmp+1
-    end
-  end
-  if ($argc == 3)
-    eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $arg2
-  end
-end
-
-document spe
-Usage: spe pe_type pe_config [cpu_id]
-end
-下面是一个取得函数tcp_v4_rcv性能计数器的例子：
-
-#连接KGTP
-(gdb) target remote /sys/kernel/debug/gtp
-#定义3个perf event trace状态变量PERF_COUNT_HW_CPU_CYCLES，PERF_COUNT_HW_CACHE_MISSES和PERF_COUNT_HW_BRANCH_MISSES。
-(gdb) dpe 0 0
-(gdb) dpe 0 3
-(gdb) dpe 0 5
-#在函数开头打开这个CPU的性能寄存器
-(gdb) trace tcp_v4_rcv
-(gdb) action
->teval $p_pe_en=1
->end
-#$kret 让我们可以处理到函数tcp_v4_rcv的结尾：
-(gdb) trace *(tcp_v4_rcv)
-(gdb) action
->teval $kret=0
-#关闭这个CPU上的所有性能计数器
->teval $p_pe_en=0
-#访问这些perf event trace状态变量将取得他们的值
->collect $p_pe_val_00_0
->collect $p_pe_val_03_0
->collect $p_pe_val_05_0
-#设置这些perf event trace状态变量为0
->teval $p_pe_val_00_0=0
->teval $p_pe_val_03_0=0
->teval $p_pe_val_05_0=0
->end
-tstart
-#等一会让每个CPU收一些TCP包
-(gdb) tstop
-(gdb) tfind
-(gdb) spe 0 0 $cpu_id
-$p_pe_val_00_2=12676
-(gdb) spe 0 3 $cpu_id
-$p_pe_val_03_2=7
-(gdb) spe 0 5 $cpu_id
-$p_pe_val_05_2=97
 如何让tracepoint直接输出信息
 在前面的章节，你可以看到如果想取得Linux内核的信息，你需要用tracepoint "collect" action来保存信息到tracepoint帧中并用GDB tfind命来来分析这些数据帧。
 但是有时我们希望直接取得这些数据，所以KGTP提供了一种直接取得这些数据的方法。
@@ -1180,6 +1161,145 @@ gtp 1:((struct task_struct *)$current_task)->pid=12085
 gtp 1:$printk_tmp=jiffies_64=4322021438
 gtp 1:file->f_path.dentry->d_iname=b26
 "gtp 1" 的意思是数据是tracepoint 1输出的。
+
+如何用watch tracepoint控制硬件断点记录内存访问
+Watch tracepoint 可以通过设置一些特殊的trace状态变量设置硬件断点来记录内存访问。
+请 注意 watch tracepoint现在只有X86和X86_64支持。而且因为Linux 2.6.26和更老版本有一些IPI的问题，只有Linux 2.6.27和更新版本上可以正常使用动态watch tracepoint。
+
+watch tracepoint的trace状态变量
+名称	普通tracepoint写	普通tracepoint读	静态static tracepoint写	静态static tracepoint读	动态static tracepoint写	动态static tracepoint写
+$watch_static	 不支持	 不支持	 如果"teval $watch_static=1"则这个tracepoint是静态watch tracepoint。	 不支持	 如果"teval $watch_static=0"则这个tracepoint是动态watch tracepoint。	 不支持
+$watch_set_id	 当这个tracepoint要设置一个动态watch tracepoint的时候，设置动态watch tracepoint的ID到$watch_set_id来标明你要设置哪个动态watch tracepoint。	 不支持	 不支持	 不支持	 不支持	 不支持
+$watch_set_addr	 当这个tracepoint要设置一个动态watch tracepoint的时候，设置动态watch tracepoint的地址到$watch_set_addr来标明你要设置哪个动态watch tracepoint。	 不支持	 不支持	 不支持	 不支持	 不支持
+$watch_type	 当这个tracepoint要设置一个动态watch tracepoint的时候，设置watch类型到$watch_type。
+0是执行。 1是写。 2是读或者写。	 取得这个tracepoint设置到$watch_type里的值。	 设置watch tracepoint的类型。	 取得这个watch tracepoint的类型。	 设置watch tracepoint的默认类型。	 取得这个watch tracepoint在实际执行中的类型。
+$watch_size	 当这个tracepoint要设置一个动态watch tracepoint的时候，设置watch长度到$watch_size。
+长度是1, 2, 4, 8。	 取得这个tracepoint设置到$watch_size里的值。	 设置watch tracepoint的长度。	 取得这个watch tracepoint的长度。	 设置watch tracepoint的默认长度。	 取得这个watch tracepoint在实际执行中的长度。
+$watch_start	 设置地址到动态watch tracepoint($watch_set_addr或者$watch_set_id设置)中并让其开始工作。	 取得这次开始的返回值。 （其可能会失败因为X86只有4个硬件断点）
+取得0则成功，小于0则是错误ID。	 不支持	 不支持	 不支持	 不支持
+$watch_stop	 设置地址到$watch_stop将让一个watch这个地址的动态watch tracepoint停止。	 取得这次停止的返回值。	 不支持	 不支持	 不支持	 不支持
+$watch_trace_num	 不支持	 不支持	 不支持	 不支持	 不支持	 设置这个动态watch tracepoint的tracepoint的号码。
+$watch_trace_addr	 不支持	 不支持	 不支持	 不支持	 不支持	 设置这个动态watch tracepoint的tracepoint的地址。
+$watch_addr	 不支持	 不支持	 不支持	 这个watch tracepoint监视的地址。	 不支持	 这个watch tracepoint监视的地址。
+$watch_val	 不支持	 不支持	 不支持	 这个watch tracepoint监视的内存的值。	 不支持	 这个watch tracepoint监视的内存的值。
+$watch_count	 不支持	 不支持	 不支持	 不支持	 不支持	 这个watch tracepoint会话的一个特殊计数ID。
+静态watch tracepoint
+当你要监视全局变量或者可以取得地址的变量的值的时候，你可以使用静态watch tracepoint。下面是一个监视jiffies_64写的例子:
+
+#静态watch tracepoint从tracepoint的地址中取得要监视的地址
+trace *&jiffies_64
+  actions
+    #Set this watch tracepoint to static
+    teval $watch_static=1
+    #Watch memory write
+    teval $watch_type=1
+    teval $watch_size=8
+    collect $watch_val
+    collect $bt
+  end
+动态watch tracepoint
+当你要监视局部变量或者只能在函数中取得地址的变量的值的时候，你可以使用动态watch tracepoint。下面是一个监视函数function get_empty_filp中f->f_posf->f_op写的例子:
+
+trace *1
+  commands
+    teval $watch_static=0
+    teval $watch_type=1
+    teval $watch_size=8
+    collect $bt
+    collect $watch_addr
+    collect $watch_val
+  end
+定义了一个动态watch tracepoint。地址"1"并不是其要监视的地址。其将帮助tracepoint来找到这个动态watch tracepoint。
+
+list get_empty_filp
+trace 133
+  commands
+    teval $watch_set_addr=1
+    teval $watch_size=4
+    teval $watch_start=&(f->f_pos)
+    teval $watch_size=8
+    teval $watch_start=&(f->f_op)
+  end
+在函数get_empty_filp中定义一个普通tracepoint，其将开始监视f->f_pos和f->f_op。
+
+trace file_sb_list_del
+  commands
+    teval $watch_stop=&(file->f_pos)
+    teval $watch_stop=&(file->f_op)
+  end
+在函数file_sb_list_del中定义一个普通tracepoint，其将停止监视file->f_pos和file->f_op。
+
+使用while-stepping让Linux内核做单步
+请 注意 while-stepping现在只有X86和X86_64支持。
+
+如何使用 while-stepping
+while-stepping 是一种可以包含actions的特殊tracepoint action。
+当一个actions中包含了“while-stepping n”的tracepoint执行的时候，其将做n次单步并执行while-stepping的actions。例如：
+
+trace vfs_read
+#因为单步会影响系统速度，所以最好用passcount或者condition限制tracepoint的执行次数。
+passcount 1
+  commands
+    collect $bt
+    collect $step_count
+    #做2000次单步。
+    while-stepping 2000
+      #下面这部分是"while-stepping 2000"的actions。
+      #因为单步可能会执行到其他函数，所以最好不要访问局部变量。
+      collect $bt
+      collect $step_count
+    end
+  end
+请 注意 tracepoint在执行单步的时候会关闭当前CPU的中断。 在actions中访问 $step_count 将得到从1开始的这步的计数。
+
+读while-stepping的traceframe
+不同step的数据将会被记录到不同的traceframe中，你可以用tfind (https://code.google.com/p/kgtp/wiki/HOWTOCN#用tfind选择trace帧缓存里面的条目) 选择他们。
+或者你可以将KGTP切换到回放模式，这样GDB可以用执行和反向执行命令选择一个while-stepping tracepoint的traceframe。例如：
+用tfind选择一个while-stepping的traceframe。
+
+(gdb) tfind 
+Found trace frame 0, tracepoint 1
+#0  vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     {
+下面的命令将切换KGTP到回放模式。
+
+(gdb) monitor replay
+(gdb) tfind -1
+No longer looking at any trace frame
+#0  vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     {
+于是可以使用执行命令。
+
+(gdb) n
+368             if (!(file->f_mode & FMODE_READ))
+(gdb) p file->f_mode
+$5 = 3
+设置断点 (只在回放模式下有效，不会影响到Linux内核执行)。
+
+(gdb) b 375
+Breakpoint 2 at 0xffffffff81179b75: file /build/buildd/linux-3.2.0/fs/read_write.c, line 375.
+(gdb) c
+Continuing.
+
+Breakpoint 2, vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:375
+375             ret = rw_verify_area(READ, file, pos, count);
+(gdb) s
+rw_verify_area (read_write=0, file=0xffff8801f7bd4c00, ppos=0xffff8801f4b45f48, count=16)
+    at /build/buildd/linux-3.2.0/fs/read_write.c:300
+300             inode = file->f_path.dentry->d_inode;
+使用反向执行命令。
+
+(gdb) rs
+
+Breakpoint 2, vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:375
+375             ret = rw_verify_area(READ, file, pos, count);
+(gdb) rn
+372             if (unlikely(!access_ok(VERIFY_WRITE, buf, count)))
+GDB命令tstart，tstop，tfind或者quit可以自动关闭回放模式。
 
 如何显示被优化掉的变量值
 有时GDB会这样输出信息：
@@ -1264,13 +1384,13 @@ End with a line saying just "end".
 (gdb) quit
 于是你可以在当前目录找到文件gtpstart和gtpstop，把他们拷贝到你想调试的主机上。
 
-在被调试主机insmod gtp.ko之后：
+在被调试主机上，先拷贝KGTP目录中的程序"putgtprsp"和"gtp.ko"到这台机器上。insmod gtp.ko之后：
 启动tracepoint：
 
-cat gtpstart > /sys/kernel/debug/gtp
+./putgtprsp ./gtpstart
 停止tracepoint：
 
-cat gtpstop > /sys/kernel/debug/gtp
+./putgtprsp ./gtpstop
 可以按照http://code.google.com/p/kgtp/wiki/HOWTOCN#如何让tracepoint直接输出信息直接在板子上显示信息。
 
 如果要保存trace帧之后再分析，你可以拷贝文件"/sys/kernel/debug/gtpframe"到有GDB的主机上。
@@ -1284,6 +1404,8 @@ Found trace frame 0, tracepoint 1
 #0  vfs_readdir (file=0xffff880036e8f300, filler=0xffffffff8114f240 <filldir>, buf=0xffff880001e5bf38)
     at /home/teawater/kernel/linux-2.6/fs/readdir.c:24
 24      {
+请 注意 如果你想在使用离线调试后从远程主机上的GDB连接KGTP，你需要在调用"nc"之前"rmmod gtp"和"insmod gtp.ko"。
+
 如何使用 /sys/kernel/debug/gtpframe_pipe
 这个接口提供和"gtpframe"同样的数据，但是可以在KGTP tracepoint运行的时候也可以使用。在数据读出之后，其将自动从trace帧里删除类似ftrace "trace_pipe"。
 
@@ -1337,33 +1459,7 @@ Usage: ./getframe [option]
 
 和用户层程序一起使用KGTP
 直接读用户层程序的内存
-KGTP可以不同停止应用层程序的情况下直接读取其内存，例如：
-
-#连接KGTP(这里和前面介绍的连接方法不同)
-(gdb) target extended-remote /sys/kernel/debug/gtp
-#增加一个新的inferior用来分析应用程序的信息。
-(gdb) add-inferior
-Added inferior 2
-#切换到这个inferior
-(gdb) inferior 2
-[Switching to inferior 2 [<null>] (<noexec>)]
-#转载这个程序的符号文件
-(gdb) file ~/kernel/svn/bak/a.out
-Reading symbols from /home/teawater/kernel/svn/bak/a.out...done.
-#attach到这个进程上(这不会停止这个程序)。
-(gdb) attach 10039
-Attaching to program: /home/teawater/kernel/svn/bak/a.out, Remote target
-Reading symbols from /lib/x86_64-linux-gnu/libc.so.6...(no debugging symbols found)...done.
-Loaded symbols for /lib/x86_64-linux-gnu/libc.so.6
-Reading symbols from /lib64/ld-linux-x86-64.so.2...(no debugging symbols found)...done.
-Loaded symbols for /lib64/ld-linux-x86-64.so.2
-0x0000000000000000 in ?? ()
-#于是可以读这个程序的内存
-(gdb) p c
-$3 = -1222013392
-(gdb) p c
-$4 = -590910451
-在这个例子中，我使用了一个多inferior命令。请到 http://sourceware.org/gdb/current/onlinedocs/gdb/Inferiors-and-Programs.html 去取得其更多相关信息。
+KGTP可以不同停止应用层程序的情况下直接读取其内存，请到http://code.google.com/p/kgtp/wiki/HOWTOCN#用户程序的内存取得如何做。
 
 在tracepoint收集用户层程序的栈信息(可用来做backtrace)
 $current_task_user 是一个特殊trace状态变量。当current task 在user模式的时候，其的值为真。
@@ -1521,3 +1617,159 @@ insmod plugin_example.ko
 断开GDB. 如果 http://code.google.com/p/kgtp/wiki/HOWTOCN#GDB断开的时候不要停止tracepoint 中的选项设置为打开，则设置其为关闭。
 rmmod plugin_example.ko
 请 注意 KGTP支持加入多个插件。
+
+如何使用性能计数器
+性能计数器是大部分现代CPU都有的特殊硬件寄存器。这些寄存器对一些硬件事件进行计数：例如指令执行数量，cachemisses数量，分支预测失败数，而且这些计数不会让应用程序或者内核变慢。其还可以设置到达一定的值的时候发生中断，这些就可以用来分析在某CPU上执行程序的性能。
+Linux性能计数器子系统perf event可以用来取得性能计数器的值。你可以用KGTP perf event trace状态变量访问这些值。
+请读内核目录里的tools/perf/design.txt文件取得perf event的更多信息。
+
+定义一个perf event trace状态变量
+访问一个性能计数器需要定义下面的trace状态变量：
+
+"pe_cpu_"+tv_name       定义性能计数器的CPU ID。
+"pe_type_"+tv_name      定义性能计数器的类型。
+"pe_config_"+tv_name    定义性能计数器的配置。
+"pe_en_"+tv_name        定义性能计数器的启动开关。
+                        默认情况下性能计数器是关闭的。
+"pe_val_"+tv_name       访问这个变量能取得性能计数器的值。
+定义一个per_cpu perf event trace状态变量
+定义一个per_cpu perf event trace状态变量和http://code.google.com/p/kgtp/wiki/HOWTOCN#Per_cpu_trace状态变量一样。
+
+"p_pe_"+perf_event type+string+CPU_id
+请 注意 如果定义一个per_cpu perf event trace状态变量，就不需要在定义cpu id("pe_cpu")因为KGTP已经取得了CPU的ID。
+
+perf event的类型和配置
+类型可以是：
+
+0       PERF_TYPE_HARDWARE
+1       PERF_TYPE_SOFTWARE
+2       PERF_TYPE_TRACEPOINT
+3       PERF_TYPE_HW_CACHE
+4       PERF_TYPE_RAW
+5       PERF_TYPE_BREAKPOINT
+如果类型是0(PERF_TYPE_HARDWARE)，配置可以是：
+
+0       PERF_COUNT_HW_CPU_CYCLES
+1       PERF_COUNT_HW_INSTRUCTIONS
+2       PERF_COUNT_HW_CACHE_REFERENCES
+3       PERF_COUNT_HW_CACHE_MISSES
+4       PERF_COUNT_HW_BRANCH_INSTRUCTIONS
+5       PERF_COUNT_HW_BRANCH_MISSES
+6       PERF_COUNT_HW_BUS_CYCLES
+7       PERF_COUNT_HW_STALLED_CYCLES_FRONTEND
+8       PERF_COUNT_HW_STALLED_CYCLES_BACKEND
+
+如果类型是3(PERF_TYPE_HW_CACHE)，配置要分为3部分： 第一部分是cache id，其在设置进配置的时候需要 << 0：
+
+0       PERF_COUNT_HW_CACHE_L1D
+1       PERF_COUNT_HW_CACHE_L1I
+2       PERF_COUNT_HW_CACHE_LL
+3       PERF_COUNT_HW_CACHE_DTLB
+4       PERF_COUNT_HW_CACHE_ITLB
+5       PERF_COUNT_HW_CACHE_BPU
+第二部分是cache op id，其在设置进配置的时候需要 << 8：
+
+0       PERF_COUNT_HW_CACHE_OP_READ
+1       PERF_COUNT_HW_CACHE_OP_WRITE
+2       PERF_COUNT_HW_CACHE_OP_PREFETCH
+第三部分是cache op result id，其在设置进配置的时候需要 << 16：
+
+0       PERF_COUNT_HW_CACHE_RESULT_ACCESS
+1       PERF_COUNT_HW_CACHE_RESULT_MISS
+如果你想取得PERF_COUNT_HW_CACHE_L1I(1), PERF_COUNT_HW_CACHE_OP_WRITE(1) and PERF_COUNT_HW_CACHE_RESULT_MISS(1)你需要使用：
+
+(gdb) tvariable $pe_config_cache=1 | (1 << 8) | (1 << 16)
+内核目录中的tools/perf/design.txt是关于perf event的类型和配置。
+
+用$p_pe_en打开和关闭一个CPU上所有的perf event
+我认为取得一段代码的性能计数器信息比较好的办法是在函数开头打开计数器在函数结束的时候关闭计数器。你可以用"pe_en"设置他们，但是如果你有多个perf event trace状态变量的时候，这样会让tracepoint action很大。$p_pe_en就是处理这种问题的。 你可以打开所有perf event trace状态变量在当前CPU上用下面的action：
+
+>teval $p_pe_en=1
+设置$p_pe_en为0来关闭他们。
+
+>teval $p_pe_en=0
+用来帮助设置和取得perf event trace状态变量的GDB脚本
+下面这个GDB脚本定义了2个命令dpe和spe来帮助定义和显示perf event trace状态变量。
+你可以把他们存在~/.gdbinit或者你自己的tracepoint脚本中。于是你就可以在GDB中直接使用这2个命令。
+
+define dpe
+  if ($argc < 2)
+    printf "Usage: dpe pe_type pe_config [enable]\n"
+  end
+  if ($argc >= 2)
+    eval "tvariable $p_pe_val_%d%d_c",$arg0, $arg1
+    eval "tvariable $p_pe_en_%d%d_c",$arg0, $arg1
+    set $tmp=0
+    while $tmp<$cpu_number
+      eval "tvariable $p_pe_type_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg0
+      eval "tvariable $p_pe_config_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg1
+      eval "tvariable $p_pe_val_%d%d_c%d=0",$arg0, $arg1, $tmp
+      if ($argc >= 3)
+        eval "tvariable $p_pe_en_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg2
+      end
+      set $tmp=$tmp+1
+    end
+  end
+end
+
+document dpe
+Usage: dpe pe_type pe_config [enable]
+end
+
+define spe
+  if ($argc != 2 && $argc != 3)
+    printf "Usage: spe pe_type pe_config [cpu_id]\n"
+  end
+  if ($argc == 2)
+    set $tmp=0
+    while $tmp<$cpu_number
+      eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $tmp
+      set $tmp=$tmp+1
+    end
+  end
+  if ($argc == 3)
+    eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $arg2
+  end
+end
+
+document spe
+Usage: spe pe_type pe_config [cpu_id]
+end
+下面是一个取得函数tcp_v4_rcv性能计数器的例子：
+
+#连接KGTP
+(gdb) target remote /sys/kernel/debug/gtp
+#定义3个perf event trace状态变量PERF_COUNT_HW_CPU_CYCLES，PERF_COUNT_HW_CACHE_MISSES和PERF_COUNT_HW_BRANCH_MISSES。
+(gdb) dpe 0 0
+(gdb) dpe 0 3
+(gdb) dpe 0 5
+#在函数开头打开这个CPU的性能寄存器
+(gdb) trace tcp_v4_rcv
+(gdb) action
+>teval $p_pe_en=1
+>end
+#$kret 让我们可以处理到函数tcp_v4_rcv的结尾：
+(gdb) trace *(tcp_v4_rcv)
+(gdb) action
+>teval $kret=0
+#关闭这个CPU上的所有性能计数器
+>teval $p_pe_en=0
+#访问这些perf event trace状态变量将取得他们的值
+>collect $p_pe_val_00_0
+>collect $p_pe_val_03_0
+>collect $p_pe_val_05_0
+#设置这些perf event trace状态变量为0
+>teval $p_pe_val_00_0=0
+>teval $p_pe_val_03_0=0
+>teval $p_pe_val_05_0=0
+>end
+tstart
+#等一会让每个CPU收一些TCP包
+(gdb) tstop
+(gdb) tfind
+(gdb) spe 0 0 $cpu_id
+$p_pe_val_00_2=12676
+(gdb) spe 0 3 $cpu_id
+$p_pe_val_03_2=7
+(gdb) spe 0 5 $cpu_id
+$p_pe_val_05_2=97

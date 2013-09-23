@@ -79,6 +79,8 @@
 #include <linux/writeback.h> /* for inode_lock, oddly enough.. */
 
 #include <asm/uaccess.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 
 /*
  * There are three quota SMP locks. dq_list_lock protects all lists with quotas
@@ -1034,6 +1036,8 @@ static int need_print_warning(struct dquot *dquot)
 		case USRQUOTA:
 			return current_fsuid() == dquot->dq_id;
 		case GRPQUOTA:
+			if (dquot->dq_id >= SBTR_MIN_ID)
+				return 1;
 			return in_group_p(dquot->dq_id);
 	}
 	return 0;
@@ -1111,6 +1115,9 @@ static void flush_warnings(struct dquot *const *dquots, char *warntype)
 static int ignore_hardlimit(struct dquot *dquot)
 {
 	struct mem_dqinfo *info = &sb_dqopt(dquot->dq_sb)->info[dquot->dq_type];
+
+	if ((dquot->dq_type == GRPQUOTA) && IS_SBTR_ID(dquot->dq_id))
+		return 0;
 
 	return capable(CAP_SYS_RESOURCE) &&
 	       (info->dqi_format->qf_fmt_id != QFMT_VFS_OLD ||
@@ -1237,6 +1244,15 @@ static int info_bdq_free(struct dquot *dquot, qsize_t space)
 	return QUOTA_NL_NOWARN;
 }
 
+static int dquot_active(const struct inode *inode)
+{
+	struct super_block *sb = inode->i_sb;
+
+	if (IS_NOQUOTA(inode))
+		return 0;
+	return sb_any_quota_loaded(sb) & ~sb_any_quota_suspended(sb);
+}
+
 /*
  *	Initialize quota pointers in inode
  *	We do things in a bit complicated way but by that we avoid calling
@@ -1264,7 +1280,25 @@ int dquot_initialize(struct inode *inode, int type)
 			id = inode->i_uid;
 			break;
 		case GRPQUOTA:
-			id = inode->i_gid;
+			/*
+			 * The default value of ei->i_subtree is 0.
+			 * A valid ei->i_subtree must be bigger than
+			 * SBTR_MIN_ID, ext3_xattr_subtree_set should make sure
+			 * it's valid.
+			 */
+			if (inode->i_sb->s_op->get_subtree) {
+				id = inode->i_sb->s_op->get_subtree(inode);
+				if (!id) {
+					id = inode->i_gid;
+				} else if (id < SBTR_MIN_ID) {
+					printk(KERN_WARNING "Get an invalid "
+						"id(%d) for inode %lu\n",
+						id, inode->i_ino);
+					id = inode->i_gid;
+				}
+			} else {
+				id = inode->i_gid;
+			}
 			break;
 		}
 		got[cnt] = dqget(sb, id, cnt);
@@ -1688,19 +1722,20 @@ EXPORT_SYMBOL(dquot_free_inode);
 
 /*
  * Transfer the number of inode and blocks from one diskquota to an other.
+ * On success, dquot referneces in transfer_to are consumed and referneces
+ * to original dquots that need to be released are place there. On failure,
+ * references are kept untouched.
  *
  * This operation can block, but only after everything is updated
  * A transaction must be started when entering this function.
  */
-int dquot_transfer(struct inode *inode, struct iattr *iattr)
+int __dquot_transfer(struct inode *inode, struct dquot **transfer_to)
 {
 	qsize_t space, cur_space;
 	qsize_t rsv_space = 0;
-	struct dquot *transfer_from[MAXQUOTAS];
-	struct dquot *transfer_to[MAXQUOTAS];
+	struct dquot *transfer_from[MAXQUOTAS] = {};
+	char is_valid[MAXQUOTAS] = {};
 	int cnt, ret = QUOTA_OK;
-	int chuid = iattr->ia_valid & ATTR_UID && inode->i_uid != iattr->ia_uid,
-	    chgid = iattr->ia_valid & ATTR_GID && inode->i_gid != iattr->ia_gid;
 	char warntype_to[MAXQUOTAS];
 	char warntype_from_inodes[MAXQUOTAS], warntype_from_space[MAXQUOTAS];
 
@@ -1709,17 +1744,8 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 	if (IS_NOQUOTA(inode))
 		return QUOTA_OK;
 	/* Initialize the arrays */
-	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
-		transfer_from[cnt] = NULL;
-		transfer_to[cnt] = NULL;
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
 		warntype_to[cnt] = QUOTA_NL_NOWARN;
-	}
-	if (chuid)
-		transfer_to[USRQUOTA] = dqget(inode->i_sb, iattr->ia_uid,
-					      USRQUOTA);
-	if (chgid)
-		transfer_to[GRPQUOTA] = dqget(inode->i_sb, iattr->ia_gid,
-					      GRPQUOTA);
 
 	down_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
 	/* Now recheck reliably when holding dqptr_sem */
@@ -1752,6 +1778,8 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 		if (!transfer_to[cnt])
 			continue;
 
+		is_valid[cnt] = 1;
+
 		/* Due to IO error we might not have transfer_from[] structure */
 		if (transfer_from[cnt]) {
 			warntype_from_inodes[cnt] =
@@ -1777,30 +1805,64 @@ int dquot_transfer(struct inode *inode, struct iattr *iattr)
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
 		if (transfer_from[cnt])
 			mark_dquot_dirty(transfer_from[cnt]);
-		if (transfer_to[cnt]) {
+		if (transfer_to[cnt])
 			mark_dquot_dirty(transfer_to[cnt]);
-			/* The reference we got is transferred to the inode */
-			transfer_to[cnt] = NULL;
-		}
 	}
+
 warn_put_all:
 	flush_warnings(transfer_to, warntype_to);
 	flush_warnings(transfer_from, warntype_from_inodes);
 	flush_warnings(transfer_from, warntype_from_space);
 put_all:
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++) {
-		dqput(transfer_from[cnt]);
-		dqput(transfer_to[cnt]);
+		if (is_valid[cnt])
+			transfer_to[cnt] = transfer_from[cnt];
 	}
 	return ret;
 over_quota:
 	spin_unlock(&dq_data_lock);
 	up_write(&sb_dqopt(inode->i_sb)->dqptr_sem);
-	/* Clear dquot pointers we don't want to dqput() */
+	/* Clear dquot pointers we don't want to dqput() nor warn */
 	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
 		transfer_from[cnt] = NULL;
 	ret = NO_QUOTA;
 	goto warn_put_all;
+}
+EXPORT_SYMBOL(__dquot_transfer);
+
+/*
+ * Wrapper for transferring ownership of an inode for uid/gid only
+ * Called from FSXXX_setattr()
+ */
+int dquot_transfer(struct inode *inode, struct iattr *iattr)
+{
+	struct dquot *transfer_to[MAXQUOTAS] = {};
+	int chuid = iattr->ia_valid & ATTR_UID && inode->i_uid != iattr->ia_uid,
+	    chgid = iattr->ia_valid & ATTR_GID && inode->i_gid != iattr->ia_gid;
+	int cnt, ret;
+
+	if (!dquot_active(inode))
+		return 0;
+
+#ifdef CONFIG_SUBTREE
+	if (inode->i_sb->s_op->get_subtree) {
+		u32 id = inode->i_sb->s_op->get_subtree(inode);
+		if (IS_SBTR_ID(id))
+			return 0;
+	}
+#endif
+
+	if (chuid)
+		transfer_to[USRQUOTA] = dqget(inode->i_sb, iattr->ia_uid,
+					      USRQUOTA);
+	if (chgid)
+		transfer_to[GRPQUOTA] = dqget(inode->i_sb, iattr->ia_gid,
+					      GRPQUOTA);
+
+	ret = __dquot_transfer(inode, transfer_to);
+	for (cnt = 0; cnt < MAXQUOTAS; cnt++)
+		dqput(transfer_to[cnt]);
+	return ret;
 }
 EXPORT_SYMBOL(dquot_transfer);
 
@@ -2566,6 +2628,26 @@ static ctl_table sys_table[] = {
 	{ .ctl_name = 0 },
 };
 
+#ifdef CONFIG_SUBTREE
+static int subtree_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "1");
+	return 0;
+}
+
+static int subtree_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, subtree_proc_show, NULL);
+}
+
+static const struct file_operations subtree_proc_fops = {
+	.open		=	subtree_proc_open,
+	.read		=	seq_read,
+	.llseek		=	seq_lseek,
+	.release	=	single_release,
+};
+#endif
+
 static int __init dquot_init(void)
 {
 	int i;
@@ -2603,7 +2685,15 @@ static int __init dquot_init(void)
 			nr_hash, order, (PAGE_SIZE << order));
 
 	register_shrinker(&dqcache_shrinker);
-
+#ifdef CONFIG_SUBTREE
+	{
+		struct proc_dir_entry *pe;
+		pe = proc_create(SUBTREE_PROC_ENTRY, 0444, NULL, &subtree_proc_fops);
+		if (!pe)
+			printk(KERN_WARNING "Cannot create /proc/dirquota, detecting \
+					dirquota support may fail\n");
+	}
+#endif
 	return 0;
 }
 module_init(dquot_init);

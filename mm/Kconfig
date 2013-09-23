@@ -173,7 +173,7 @@ config COMPACTION
 	bool "Allow for memory compaction"
 	def_bool y
 	select MIGRATION
-	depends on MMU
+	depends on EXPERIMENTAL && HUGETLB_PAGE && MMU
 	help
 	  Allows the compaction of memory for the allocation of huge pages.
 

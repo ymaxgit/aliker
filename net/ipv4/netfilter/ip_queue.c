@@ -2,8 +2,11 @@
  * This is a module which is used for queueing IPv4 packets and
  * communicating with userspace via netlink.
  *
+ * Support for network namespace at Oct 2011.
+ *
  * (C) 2000-2002 James Morris <jmorris@intercode.com.au>
  * (C) 2003-2005 Netfilter Core Team <coreteam@netfilter.org>
+ * (C) 2012 Zhu Yanhai <gaoyang.zyh@taobao.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -31,50 +34,94 @@
 #include <net/route.h>
 #include <net/netfilter/nf_queue.h>
 #include <net/ip.h>
+#include <linux/hash.h>
 
 #define IPQ_QMAX_DEFAULT 1024
 #define IPQ_PROC_FS_NAME "ip_queue"
 #define NET_IPQ_QMAX 2088
 #define NET_IPQ_QMAX_NAME "ip_queue_maxlen"
 
+
+#if defined(CONFIG_LOCK_KERNEL)
+/* sysctl handler is serialized if the kernel big lock is enabled. */
+static inline void ipq_sysctl_lock(void) {};
+static inline void ipq_sysctl_unlock(void) {};
+#else
+static DEFINE_MUTEX(ipq_sysctl_mutex);
+
+static inline void ipq_sysctl_lock(void)
+{
+	mutex_lock(&ipq_sysctl_mutex);
+}
+
+static inline void ipq_sysctl_unlock(void)
+{
+	mutex_unlock(&ipq_sysctl_mutex);
+}
+#endif
+
+
 typedef int (*ipq_cmpfn)(struct nf_queue_entry *, unsigned long);
 
-static unsigned char copy_mode __read_mostly = IPQ_COPY_NONE;
-static unsigned int queue_maxlen __read_mostly = IPQ_QMAX_DEFAULT;
-static DEFINE_RWLOCK(queue_lock);
-static int peer_pid __read_mostly;
-static unsigned int copy_range __read_mostly;
-static unsigned int queue_total;
-static unsigned int queue_dropped = 0;
-static unsigned int queue_user_dropped = 0;
-static struct sock *ipqnl __read_mostly;
-static LIST_HEAD(queue_list);
+static unsigned int queue_maxlen = IPQ_QMAX_DEFAULT;
+
+/*
 static DEFINE_MUTEX(ipqnl_mutex);
+*/
+
+struct ipq_instance {
+	struct hlist_node hlist;
+	struct sock *ipqnl;
+	int peer_pid;
+	struct list_head queue_list;
+	rwlock_t queue_lock;
+	unsigned char copy_mode;
+	unsigned int copy_range;
+	unsigned int queue_total;
+	unsigned int queue_dropped;
+	unsigned int queue_user_dropped;
+	unsigned int queue_maxlen;
+};
+
+
+
+
+static inline struct net *find_current_net_ns(void)
+{
+	struct net *net;
+	struct pid *pid;
+
+	pid = get_task_pid(current, PIDTYPE_PID);
+	net = get_net_ns_by_pid(pid_vnr(pid));
+	return net;
+}
 
 static inline void
-__ipq_enqueue_entry(struct nf_queue_entry *entry)
+__ipq_enqueue_entry(struct nf_queue_entry *entry,
+		struct ipq_instance *instance)
 {
-       list_add_tail(&entry->list, &queue_list);
-       queue_total++;
+       list_add_tail(&entry->list, &instance->queue_list);
+       instance->queue_total++;
 }
 
 static inline int
-__ipq_set_mode(unsigned char mode, unsigned int range)
+__ipq_set_mode(unsigned char mode, unsigned int range,
+		struct ipq_instance *instance)
 {
 	int status = 0;
 
-	switch(mode) {
+	switch (mode) {
 	case IPQ_COPY_NONE:
 	case IPQ_COPY_META:
-		copy_mode = mode;
-		copy_range = 0;
+		instance->copy_mode = mode;
+		instance->copy_range = 0;
 		break;
 
 	case IPQ_COPY_PACKET:
-		copy_mode = mode;
-		copy_range = range;
-		if (copy_range > 0xFFFF)
-			copy_range = 0xFFFF;
+		instance->copy_mode = mode;
+		instance->copy_range = range;
+		if (instance->copy_range > 0xFFFF)
+			instance->copy_range = 0xFFFF;
 		break;
 
 	default:
@@ -84,25 +131,26 @@ __ipq_set_mode(unsigned char mode, unsigned int range)
 	return status;
 }
 
-static void __ipq_flush(ipq_cmpfn cmpfn, unsigned long data);
+static void __ipq_flush(ipq_cmpfn cmpfn, unsigned long data,
+		struct ipq_instance *instance);
 
 static inline void
-__ipq_reset(void)
+__ipq_reset(struct ipq_instance *instance)
 {
-	peer_pid = 0;
+	instance->peer_pid = 0;
 	net_disable_timestamp();
-	__ipq_set_mode(IPQ_COPY_NONE, 0);
-	__ipq_flush(NULL, 0);
+	__ipq_set_mode(IPQ_COPY_NONE, 0, instance);
+	__ipq_flush(NULL, 0, instance);
 }
 
 static struct nf_queue_entry *
-ipq_find_dequeue_entry(unsigned long id)
+ipq_find_dequeue_entry(unsigned long id, struct ipq_instance *instance)
 {
 	struct nf_queue_entry *entry = NULL, *i;
 
-	write_lock_bh(&queue_lock);
+	write_lock_bh(&instance->queue_lock);
 
-	list_for_each_entry(i, &queue_list, list) {
+	list_for_each_entry(i, &instance->queue_list, list) {
 		if ((unsigned long)i == id) {
 			entry = i;
 			break;
@@ -111,37 +159,40 @@ ipq_find_dequeue_entry(unsigned long id)
 
 	if (entry) {
 		list_del(&entry->list);
-		queue_total--;
+		instance->queue_total--;
 	}
 
-	write_unlock_bh(&queue_lock);
+	write_unlock_bh(&instance->queue_lock);
 	return entry;
 }
 
 static void
-__ipq_flush(ipq_cmpfn cmpfn, unsigned long data)
+__ipq_flush(ipq_cmpfn cmpfn, unsigned long data,
+	struct ipq_instance *instance)
 {
 	struct nf_queue_entry *entry, *next;
 
-	list_for_each_entry_safe(entry, next, &queue_list, list) {
+	list_for_each_entry_safe(entry, next, &instance->queue_list, list) {
 		if (!cmpfn || cmpfn(entry, data)) {
 			list_del(&entry->list);
-			queue_total--;
+			instance->queue_total--;
 			nf_reinject(entry, NF_DROP);
 		}
 	}
 }
 
 static void
-ipq_flush(ipq_cmpfn cmpfn, unsigned long data)
+ipq_flush(ipq_cmpfn cmpfn, unsigned long data,
+		struct ipq_instance *instance)
 {
-	write_lock_bh(&queue_lock);
-	__ipq_flush(cmpfn, data);
-	write_unlock_bh(&queue_lock);
+	write_lock_bh(&instance->queue_lock);
+	__ipq_flush(cmpfn, data, instance);
+	write_unlock_bh(&instance->queue_lock);
 }
 
 static struct sk_buff *
-ipq_build_packet_message(struct nf_queue_entry *entry, int *errp)
+ipq_build_packet_message(struct nf_queue_entry *entry, int *errp,
+		struct ipq_instance *instance)
 {
 	sk_buff_data_t old_tail;
 	size_t size = 0;
@@ -150,8 +201,13 @@ ipq_build_packet_message(struct nf_queue_entry *entry, int *errp)
 	struct ipq_packet_msg *pmsg;
 	struct nlmsghdr *nlh;
 	struct timeval tv;
+	int copy_mode;
+	int copy_range;
 
-	read_lock_bh(&queue_lock);
+	copy_mode = instance->copy_mode;
+	copy_range = instance->copy_range;
+
+	read_lock_bh(&instance->queue_lock);
 
 	switch (copy_mode) {
 	case IPQ_COPY_META:
@@ -163,7 +219,7 @@ ipq_build_packet_message(struct nf_queue_entry *entry, int *errp)
 		if ((entry->skb->ip_summed == CHECKSUM_PARTIAL ||
 		     entry->skb->ip_summed == CHECKSUM_COMPLETE) &&
 		    (*errp = skb_checksum_help(entry->skb))) {
-			read_unlock_bh(&queue_lock);
+			read_unlock_bh(&instance->queue_lock);
 			return NULL;
 		}
 		if (copy_range == 0 || copy_range > entry->skb->len)
@@ -176,11 +232,11 @@ ipq_build_packet_message(struct nf_queue_entry *entry, int *errp)
 
 	default:
 		*errp = -EINVAL;
-		read_unlock_bh(&queue_lock);
+		read_unlock_bh(&instance->queue_lock);
 		return NULL;
 	}
 
-	read_unlock_bh(&queue_lock);
+	read_unlock_bh(&instance->queue_lock);
 
 	skb = alloc_skb(size, GFP_ATOMIC);
 	if (!skb)
@@ -191,7 +247,7 @@ ipq_build_packet_message(struct nf_queue_entry *entry, int *errp)
 	pmsg = NLMSG_DATA(nlh);
 	memset(pmsg, 0, sizeof(*pmsg));
 
-	pmsg->packet_id       = (unsigned long )entry;
+	pmsg->packet_id       = (unsigned long)entry;
 	pmsg->data_len        = data_len;
 	tv = ktime_to_timeval(entry->skb->tstamp);
 	pmsg->timestamp_sec   = tv.tv_sec;
@@ -234,46 +290,69 @@ ipq_enqueue_packet(struct nf_queue_entry *entry, unsigned int queuenum)
 {
 	int status = -EINVAL;
 	struct sk_buff *nskb;
+	struct sock *ipqnl = NULL;
+	struct ipq_instance *instance;
+	struct net *net = NULL;
+	int peer_pid = 0;
 
-	if (copy_mode == IPQ_COPY_NONE)
+	if (entry->indev)
+		net = entry->indev->nd_net;
+	else if (entry->outdev)
+		net = entry->outdev->nd_net;
+
+	if (unlikely(!net)) {
+		printk(KERN_INFO "Cannot find net in %s\n", __func__);
+		return -EINVAL;
+	}
+
+	instance = net->ipq;
+	if (unlikely(!instance)) {
+		printk(KERN_INFO "Cannot find instance: %s\n", __func__);
+		return -EINVAL;
+	}
+	peer_pid = instance->peer_pid;
+	ipqnl = instance->ipqnl;
+
+	if (instance->copy_mode == IPQ_COPY_NONE)
 		return -EAGAIN;
 
-	nskb = ipq_build_packet_message(entry, &status);
+	nskb = ipq_build_packet_message(entry, &status, instance);
 	if (nskb == NULL)
 		return status;
 
-	write_lock_bh(&queue_lock);
+	write_lock_bh(&instance->queue_lock);
 
 	if (!peer_pid)
 		goto err_out_free_nskb;
 
-	if (queue_total >= queue_maxlen) {
-		queue_dropped++;
+	if (instance->queue_total >= instance->queue_maxlen) {
+		instance->queue_dropped++;
 		status = -ENOSPC;
 		if (net_ratelimit())
 			  printk (KERN_WARNING "ip_queue: full at %d entries, "
-				  "dropping packets(s). Dropped: %d\n", queue_total,
-				  queue_dropped);
+				  "dropping packets(s). Dropped: %d\n",
+				  instance->queue_total,
+				  instance->queue_dropped);
 		goto err_out_free_nskb;
 	}
 
 	/* netlink_unicast will either free the nskb or attach it to a socket */
 	status = netlink_unicast(ipqnl, nskb, peer_pid, MSG_DONTWAIT);
 	if (status < 0) {
-		queue_user_dropped++;
+		instance->queue_user_dropped++;
 		goto err_out_unlock;
 	}
 
-	__ipq_enqueue_entry(entry);
+	__ipq_enqueue_entry(entry, instance);
 
-	write_unlock_bh(&queue_lock);
+	write_unlock_bh(&instance->queue_lock);
 	return status;
 
 err_out_free_nskb:
 	kfree_skb(nskb);
 
 err_out_unlock:
-	write_unlock_bh(&queue_lock);
+	write_unlock_bh(&instance->queue_lock);
 	return status;
 }
 
@@ -315,14 +394,15 @@ ipq_mangle_ipv4(ipq_verdict_msg_t *v, struct nf_queue_entry *e)
 }
 
 static int
-ipq_set_verdict(struct ipq_verdict_msg *vmsg, unsigned int len)
+ipq_set_verdict(struct ipq_verdict_msg *vmsg, unsigned int len,
+		struct ipq_instance *instance)
 {
 	struct nf_queue_entry *entry;
 
 	if (vmsg->value > NF_MAX_VERDICT)
 		return -EINVAL;
 
-	entry = ipq_find_dequeue_entry(vmsg->id);
+	entry = ipq_find_dequeue_entry(vmsg->id, instance);
 	if (entry == NULL)
 		return -ENOENT;
 	else {
@@ -338,19 +418,20 @@ ipq_set_verdict(struct ipq_verdict_msg *vmsg, unsigned int len)
 }
 
 static int
-ipq_set_mode(unsigned char mode, unsigned int range)
+ipq_set_mode(unsigned char mode, unsigned int range, struct ipq_instance *instance)
 {
 	int status;
 
-	write_lock_bh(&queue_lock);
-	status = __ipq_set_mode(mode, range);
-	write_unlock_bh(&queue_lock);
+	write_lock_bh(&instance->queue_lock);
+	status = __ipq_set_mode(mode, range, instance);
+	write_unlock_bh(&instance->queue_lock);
 	return status;
 }
 
 static int
 ipq_receive_peer(struct ipq_peer_msg *pmsg,
-		 unsigned char type, unsigned int len)
+		 unsigned char type, unsigned int len,
+		 struct ipq_instance *instance)
 {
 	int status = 0;
 
@@ -360,7 +441,7 @@ ipq_receive_peer(struct ipq_peer_msg *pmsg,
 	switch (type) {
 	case IPQM_MODE:
 		status = ipq_set_mode(pmsg->msg.mode.value,
-				      pmsg->msg.mode.range);
+				      pmsg->msg.mode.range, instance);
 		break;
 
 	case IPQM_VERDICT:
@@ -368,7 +449,7 @@ ipq_receive_peer(struct ipq_peer_msg *pmsg,
 			status = -EINVAL;
 		else
 			status = ipq_set_verdict(&pmsg->msg.verdict,
-						 len - sizeof(*pmsg));
+						 len - sizeof(*pmsg), instance);
 			break;
 	default:
 		status = -EINVAL;
@@ -399,9 +480,9 @@ dev_cmp(struct nf_queue_entry *entry, unsigned long ifindex)
 }
 
 static void
-ipq_dev_drop(int ifindex)
+ipq_dev_drop(int ifindex, struct ipq_instance *instance)
 {
-	ipq_flush(dev_cmp, ifindex);
+	ipq_flush(dev_cmp, ifindex, instance);
 }
 
 #define RCV_SKB_FAIL(err) do { netlink_ack(skb, nlh, (err)); return; } while (0)
@@ -411,6 +492,9 @@ __ipq_rcv_skb(struct sk_buff *skb)
 {
 	int status, type, pid, flags, nlmsglen, skblen;
 	struct nlmsghdr *nlh;
+	struct net *net;
+	struct ipq_instance *instance = NULL;
+
 
 	skblen = skb->len;
 	if (skblen < sizeof(*nlh))
@@ -422,9 +506,14 @@ __ipq_rcv_skb(struct sk_buff *skb)
 		return;
 
 	pid = nlh->nlmsg_pid;
+
+	net = get_net_ns_by_pid(pid);
+
+	pid = pid_nr(find_vpid(pid));
+
 	flags = nlh->nlmsg_flags;
 
-	if(pid <= 0 || !(flags & NLM_F_REQUEST) || flags & NLM_F_MULTI)
+	if (pid <= 0 || !(flags & NLM_F_REQUEST) || flags & NLM_F_MULTI)
 		RCV_SKB_FAIL(-EINVAL);
 
 	if (flags & MSG_TRUNC)
@@ -440,22 +529,24 @@ __ipq_rcv_skb(struct sk_buff *skb)
 	if (security_netlink_recv(skb, CAP_NET_ADMIN))
 		RCV_SKB_FAIL(-EPERM);
 
-	write_lock_bh(&queue_lock);
+	instance = net->ipq;
+	BUG_ON(instance->ipqnl != skb->sk);
 
-	if (peer_pid) {
-		if (peer_pid != pid) {
-			write_unlock_bh(&queue_lock);
+	write_lock(&instance->queue_lock);
+	if (instance->peer_pid) {
+		if (instance->peer_pid != pid) {
+			write_unlock(&instance->queue_lock);
 			RCV_SKB_FAIL(-EBUSY);
 		}
 	} else {
 		net_enable_timestamp();
-		peer_pid = pid;
+		instance->peer_pid = pid;
 	}
+	write_unlock(&instance->queue_lock);
 
-	write_unlock_bh(&queue_lock);
 
 	status = ipq_receive_peer(NLMSG_DATA(nlh), type,
-				  nlmsglen - NLMSG_LENGTH(0));
+				  nlmsglen - NLMSG_LENGTH(0), instance);
 	if (status < 0)
 		RCV_SKB_FAIL(status);
 
@@ -464,12 +555,12 @@ __ipq_rcv_skb(struct sk_buff *skb)
 	return;
 }
 
-static void
+static inline void
 ipq_rcv_skb(struct sk_buff *skb)
 {
-	mutex_lock(&ipqnl_mutex);
+	/* mutex_lock(&ipqnl_mutex); */
 	__ipq_rcv_skb(skb);
-	mutex_unlock(&ipqnl_mutex);
+	/* mutex_unlock(&ipqnl_mutex); */
 }
 
 static int
@@ -477,13 +568,15 @@ ipq_rcv_dev_event(struct notifier_block *this,
 		  unsigned long event, void *ptr)
 {
 	struct net_device *dev = ptr;
+	struct ipq_instance *instance = NULL;
 
-	if (!net_eq(dev_net(dev), &init_net))
+	instance = dev_net(dev)->ipq;
+	if (unlikely(!instance))
 		return NOTIFY_DONE;
 
 	/* Drop any packets associated with the downed device */
 	if (event == NETDEV_DOWN)
-		ipq_dev_drop(dev->ifindex);
+		ipq_dev_drop(dev->ifindex, instance);
 	return NOTIFY_DONE;
 }
 
@@ -496,13 +589,25 @@ ipq_rcv_nl_event(struct notifier_block *this,
 		 unsigned long event, void *ptr)
 {
 	struct netlink_notify *n = ptr;
+	struct ipq_instance *instance = NULL;
 
 	if (event == NETLINK_URELEASE &&
 	    n->protocol == NETLINK_FIREWALL && n->pid) {
-		write_lock_bh(&queue_lock);
-		if ((n->net == &init_net) && (n->pid == peer_pid))
-			__ipq_reset();
-		write_unlock_bh(&queue_lock);
+
+		instance = n->net->ipq;
+
+		if (instance->peer_pid != n->pid)
+			instance = NULL;
+
+		if (unlikely(!instance)) {
+			printk(KERN_INFO "failed to find instance: %s",
+					__func__);
+			return NOTIFY_DONE;
+		}
+
+		write_lock_bh(&instance->queue_lock);
+		__ipq_reset(instance);
+		write_unlock_bh(&instance->queue_lock);
 	}
 	return NOTIFY_DONE;
 }
@@ -512,6 +617,35 @@ static struct notifier_block ipq_nl_notifier = {
 };
 
 #ifdef CONFIG_SYSCTL
+
+static int ipq_do_sysctl(ctl_table *ctl, int write,
+		void __user *buffer, size_t *lenp, loff_t *ppos)
+{
+	int ret;
+	struct ipq_instance *instance;
+	struct net *net;
+
+	net = find_current_net_ns();
+	instance = net->ipq;
+
+	ipq_sysctl_lock();
+
+	if (!write)
+		queue_maxlen = instance->queue_maxlen;
+
+	ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
+	if (ret) {
+		ipq_sysctl_unlock();
+		return ret;
+	}
+
+	if (write)
+		instance->queue_maxlen = queue_maxlen;
+
+	ipq_sysctl_unlock();
+	return 0;
+}
+
 static struct ctl_table_header *ipq_sysctl_header;
 
 static ctl_table ipq_table[] = {
@@ -521,16 +655,35 @@ static ctl_table ipq_table[] = {
 		.data		= &queue_maxlen,
 		.maxlen		= sizeof(queue_maxlen),
 		.mode		= 0644,
-		.proc_handler	= proc_dointvec
+		.proc_handler	= ipq_do_sysctl,
 	},
 	{ .ctl_name = 0 }
 };
+
+
+
 #endif
 
 #ifdef CONFIG_PROC_FS
 static int ip_queue_show(struct seq_file *m, void *v)
 {
-	read_lock_bh(&queue_lock);
+	struct net *net;
+	struct pid *pid;
+	struct ipq_instance *instance;
+	pid_t vpid;
+
+	net = find_current_net_ns();
+
+	instance = net->ipq;
+	if (unlikely(!instance)) {
+		printk(KERN_WARNING "Cannot find instance for net: %p\n", net);
+		return 0;
+	}
+
+	pid = find_pid_ns(instance->peer_pid, &init_pid_ns);
+	vpid = pid_vnr(pid);
+
+	read_lock_bh(&instance->queue_lock);
 
 	seq_printf(m,
 		      "Peer PID          : %d\n"
@@ -540,15 +693,15 @@ static int ip_queue_show(struct seq_file *m, void *v)
 		      "Queue max. length : %u\n"
 		      "Queue dropped     : %u\n"
 		      "Netlink dropped   : %u\n",
-		      peer_pid,
-		      copy_mode,
-		      copy_range,
-		      queue_total,
-		      queue_maxlen,
-		      queue_dropped,
-		      queue_user_dropped);
+		      vpid,
+		      instance->copy_mode,
+		      instance->copy_range,
+		      instance->queue_total,
+		      instance->queue_maxlen,
+		      instance->queue_dropped,
+		      instance->queue_user_dropped);
 
-	read_unlock_bh(&queue_lock);
+	read_unlock_bh(&instance->queue_lock);
 	return 0;
 }
 
@@ -571,27 +724,91 @@ static const struct nf_queue_handler nfqh = {
 	.outfn	= &ipq_enqueue_packet,
 };
 
+static int ipq_netlink_init(struct net *net)
+{
+	struct sock *sk;
+	struct ipq_instance *instance = NULL;
+	int ret = -ENOMEM;
+	struct proc_dir_entry *proc = NULL;
+	instance = kzalloc(sizeof(struct ipq_instance), GFP_KERNEL);
+	if (!instance)
+		goto out;
+
+	sk = netlink_kernel_create(net, NETLINK_FIREWALL, 0,
+				      ipq_rcv_skb, NULL, THIS_MODULE);
+	if (!sk)
+		goto free_instance;
+
+#ifdef CONFIG_PROC_FS
+	proc = proc_create(IPQ_PROC_FS_NAME, 0, net->proc_net,
+			&ip_queue_proc_fops);
+	if (!proc) {
+		printk(KERN_ERR "ip_queue: failed to create proc entry\n");
+		goto destroy_sk;
+	}
+#endif
+	instance->ipqnl = sk;
+	instance->peer_pid = 0;
+	INIT_LIST_HEAD(&instance->queue_list);
+	rwlock_init(&instance->queue_lock);
+
+	instance->copy_mode = IPQ_COPY_NONE;
+	instance->copy_range = 0;
+	instance->queue_total = 0;
+	instance->queue_dropped = 0;
+	instance->queue_user_dropped = 0;
+	instance->queue_maxlen = IPQ_QMAX_DEFAULT;
+
+	net->ipq = instance;
+
+	return 0;
+destroy_sk:
+	netlink_kernel_release(sk);
+free_instance:
+	kfree(instance);
+out:
+	return ret;
+}
+
+static void ipq_netlink_exit(struct net *net)
+{
+	struct ipq_instance *instance = NULL;
+
+	instance = net->ipq;
+	net->ipq = NULL;
+	if (!instance)
+		goto out;
+
+	__ipq_flush(NULL, 0, instance);
+
+
+	netlink_kernel_release(instance->ipqnl);
+
+	kfree(instance);
+
+out:
+	proc_net_remove(net, IPQ_PROC_FS_NAME);
+	return;
+}
+
+static struct pernet_operations ipq_netlink_ops = {
+	.init = ipq_netlink_init,
+	.exit = ipq_netlink_exit,
+};
+
 static int __init ip_queue_init(void)
 {
 	int status = -ENOMEM;
 	struct proc_dir_entry *proc __maybe_unused;
 
+
 	netlink_register_notifier(&ipq_nl_notifier);
-	ipqnl = netlink_kernel_create(&init_net, NETLINK_FIREWALL, 0,
-				      ipq_rcv_skb, NULL, THIS_MODULE);
-	if (ipqnl == NULL) {
-		printk(KERN_ERR "ip_queue: failed to create netlink socket\n");
+
+	if (register_pernet_subsys(&ipq_netlink_ops)) {
+		printk(KERN_ERR"ip_queue: failed to register pernet subsys\n");
 		goto cleanup_netlink_notifier;
 	}
 
-#ifdef CONFIG_PROC_FS
-	proc = proc_create(IPQ_PROC_FS_NAME, 0, init_net.proc_net,
-			   &ip_queue_proc_fops);
-	if (!proc) {
-		printk(KERN_ERR "ip_queue: failed to create proc entry\n");
-		goto cleanup_ipqnl;
-	}
-#endif
 	register_netdevice_notifier(&ipq_dev_notifier);
 #ifdef CONFIG_SYSCTL
 	ipq_sysctl_header = register_sysctl_paths(net_ipv4_ctl_path, ipq_table);
@@ -601,6 +818,8 @@ static int __init ip_queue_init(void)
 		printk(KERN_ERR "ip_queue: failed to register queue handler\n");
 		goto cleanup_sysctl;
 	}
+
+
 	return status;
 
 cleanup_sysctl:
@@ -608,11 +827,12 @@ cleanup_sysctl:
 	unregister_sysctl_table(ipq_sysctl_header);
 #endif
 	unregister_netdevice_notifier(&ipq_dev_notifier);
-	proc_net_remove(&init_net, IPQ_PROC_FS_NAME);
 cleanup_ipqnl: __maybe_unused
-	netlink_kernel_release(ipqnl);
+	unregister_pernet_subsys(&ipq_netlink_ops);
+	       /*
 	mutex_lock(&ipqnl_mutex);
 	mutex_unlock(&ipqnl_mutex);
+	*/
 
 cleanup_netlink_notifier:
 	netlink_unregister_notifier(&ipq_nl_notifier);
@@ -623,23 +843,26 @@ static void __exit ip_queue_fini(void)
 {
 	nf_unregister_queue_handlers(&nfqh);
 	synchronize_net();
-	ipq_flush(NULL, 0);
 
 #ifdef CONFIG_SYSCTL
 	unregister_sysctl_table(ipq_sysctl_header);
 #endif
 	unregister_netdevice_notifier(&ipq_dev_notifier);
-	proc_net_remove(&init_net, IPQ_PROC_FS_NAME);
 
-	netlink_kernel_release(ipqnl);
+	unregister_pernet_subsys(&ipq_netlink_ops);
+
+	/*
 	mutex_lock(&ipqnl_mutex);
 	mutex_unlock(&ipqnl_mutex);
+	*/
 
 	netlink_unregister_notifier(&ipq_nl_notifier);
 }
 
-MODULE_DESCRIPTION("IPv4 packet queue handler");
+MODULE_DESCRIPTION("IPv4 packet queue handler, with full network namespace support");
 MODULE_AUTHOR("James Morris <jmorris@intercode.com.au>");
+MODULE_AUTHOR("rewritten by Zhu Yanhai <gaoyang.zyh@taobao.com>");
+
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_NET_PF_PROTO(PF_NETLINK, NETLINK_FIREWALL);
 

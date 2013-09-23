@@ -86,7 +86,7 @@ module_param(oos_shadow, bool, 0644);
 	}
 #endif
 
-#define PT_FIRST_AVAIL_BITS_SHIFT 9
+#define PT_FIRST_AVAIL_BITS_SHIFT 10
 #define PT64_SECOND_AVAIL_BITS_SHIFT 52
 
 #define VALID_PAGE(x) ((x) != INVALID_PAGE)
@@ -863,7 +863,8 @@ static int kvm_age_rmapp(struct kvm *kvm, unsigned long *rmapp,
 	int young = 0;
 
 	/*
-	 * Emulate the accessed bit for EPT, by checking if this page has
+	 * In case of absence of EPT Access and Dirty Bits supports,
+	 * emulate the accessed bit for EPT, by checking if this page has
 	 * an EPT mapping, and clearing it if it does. On the next access,
 	 * a new EPT mapping will be established.
 	 * This has some overhead, but not as much as the cost of swapping
@@ -876,11 +877,12 @@ static int kvm_age_rmapp(struct kvm *kvm, unsigned long *rmapp,
 	while (spte) {
 		int _young;
 		u64 _spte = *spte;
-		BUG_ON(!(_spte & PT_PRESENT_MASK));
-		_young = _spte & PT_ACCESSED_MASK;
+		BUG_ON(!is_shadow_present_pte(_spte));
+		_young = _spte & shadow_accessed_mask;
 		if (_young) {
 			young = 1;
-			clear_bit(PT_ACCESSED_SHIFT, (unsigned long *)spte);
+			clear_bit((ffs(shadow_accessed_mask) - 1),
+				 (unsigned long *)spte);
 		}
 		spte = rmap_next(kvm, rmapp, spte);
 	}
@@ -2155,11 +2157,14 @@ static int mmu_alloc_roots(struct kvm_vcpu *vcpu)
 		hpa_t root = vcpu->arch.mmu.root_hpa;
 
 		ASSERT(!VALID_PAGE(root));
-		if (tdp_enabled)
-			direct = 1;
 		if (mmu_check_root(vcpu, root_gfn))
 			return 1;
 		spin_lock(&vcpu->kvm->mmu_lock);
+		if (tdp_enabled) {
+			direct = 1;
+			root_gfn = 0;
+		}
+		kvm_mmu_free_some_pages(vcpu);
 		sp = kvm_mmu_get_page(vcpu, root_gfn, 0,
 				      PT64_ROOT_LEVEL, direct,
 				      ACC_ALL, NULL);
@@ -2170,8 +2175,6 @@ static int mmu_alloc_roots(struct kvm_vcpu *vcpu)
 		return 0;
 	}
 	direct = !is_paging(vcpu);
-	if (tdp_enabled)
-		direct = 1;
 	for (i = 0; i < 4; ++i) {
 		hpa_t root = vcpu->arch.mmu.pae_root[i];
 
@@ -2187,7 +2190,12 @@ static int mmu_alloc_roots(struct kvm_vcpu *vcpu)
 			root_gfn = 0;
 		if (mmu_check_root(vcpu, root_gfn))
 			return 1;
+		if (tdp_enabled) {
+			direct = 1;
+			root_gfn = i << 30;
+		}
 		spin_lock(&vcpu->kvm->mmu_lock);
+		kvm_mmu_free_some_pages(vcpu);
 		sp = kvm_mmu_get_page(vcpu, root_gfn, i << 30,
 				      PT32_ROOT_LEVEL, direct,
 				      ACC_ALL, NULL);
@@ -2557,9 +2565,6 @@ int kvm_mmu_load(struct kvm_vcpu *vcpu)
 	r = mmu_topup_memory_caches(vcpu);
 	if (r)
 		goto out;
-	spin_lock(&vcpu->kvm->mmu_lock);
-	kvm_mmu_free_some_pages(vcpu);
-	spin_unlock(&vcpu->kvm->mmu_lock);
 	r = mmu_alloc_roots(vcpu);
 	spin_lock(&vcpu->kvm->mmu_lock);
 	mmu_sync_roots(vcpu);
@@ -2962,7 +2967,8 @@ void kvm_mmu_destroy(struct kvm_vcpu *vcpu)
 	mmu_free_memory_caches(vcpu);
 }
 
-void kvm_mmu_slot_remove_write_access(struct kvm *kvm, int slot)
+void kvm_mmu_slot_remove_write_access(struct kvm *kvm, int slot,
+				      bool destroy_large_pages)
 {
 	struct kvm_mmu_page *sp;
 
@@ -2973,9 +2979,22 @@ void kvm_mmu_slot_remove_write_access(struct kvm *kvm, int slot)
 		if (!test_bit(slot, sp->slot_bitmap))
 			continue;
 
-		if (sp->role.level != PT_PAGE_TABLE_LEVEL)
-			continue;
+		if (sp->role.level != PT_PAGE_TABLE_LEVEL) {
+			if (!destroy_large_pages)
+				continue;
 
+			pt = sp->spt;
+			for (i = 0; i < PT64_ENT_PER_PAGE; ++i) {
+				if (is_shadow_present_pte(pt[i]) &&
+				    is_large_pte(pt[i])) {
+					--kvm->stat.lpages;
+					rmap_remove(kvm, &pt[i]);
+					__set_spte(&pt[i],
+						   shadow_trap_nonpresent_pte);
+				}
+			}
+			continue;
+		}
 		pt = sp->spt;
 		for (i = 0; i < PT64_ENT_PER_PAGE; ++i)
 			/* avoid RMW */

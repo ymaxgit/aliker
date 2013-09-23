@@ -29,6 +29,7 @@
 static LIST_HEAD(sbridge_edac_list);
 static DEFINE_MUTEX(sbridge_edac_lock);
 static int probed;
+static int edac_log_mce = 0;
 
 /*
  * Alter this version for the module when modifications are made
@@ -557,7 +558,8 @@ static int get_dimm_config(const struct mem_ctl_info *mci)
 {
 	struct sbridge_pvt *pvt = mci->pvt_info;
 	struct csrow_info *csr;
-	int i, j, banks, ranks, rows, cols, size, npages;
+	unsigned i, j, banks, ranks, rows, cols, npages;
+	u64 size;
 	int csrow = 0;
 	unsigned long last_page = 0;
 	u32 reg;
@@ -629,10 +631,10 @@ static int get_dimm_config(const struct mem_ctl_info *mci)
 				cols = numcol(mtr);
 
 				/* DDR3 has 8 I/O banks */
-				size = (rows * cols * banks * ranks) >> (20 - 3);
+				size = ((u64)rows * cols * banks * ranks) >> (20 - 3);
 				npages = MiB_TO_PAGES(size);
 
-				debugf0("mc#%d: channel %d, dimm %d, %d Mb (%d pages) bank: %d, rank: %d, row: %#x, col: %#x\n",
+				debugf0("mc#%d: channel %d, dimm %d, %Ld Mb (%d pages) bank: %d, rank: %d, row: %#x, col: %#x\n",
 					pvt->sbridge_dev->mc, i, j,
 					size, npages,
 					banks, ranks, rows, cols);
@@ -1558,8 +1560,10 @@ static void sbridge_check_error(struct mem_ctl_info *mci)
 
 	smp_rmb();
 	if (pvt->mce_overrun) {
-		sbridge_printk(KERN_ERR, "Lost %d memory errors\n",
+		if (edac_log_mce) {
+			sbridge_printk(KERN_ERR, "Lost %d memory errors\n",
 			      pvt->mce_overrun);
+		}
 		smp_wmb();
 		pvt->mce_overrun = 0;
 	}
@@ -1593,17 +1597,19 @@ static int sbridge_mce_check_error(void *priv, struct mce *mce)
 	if ((mce->status & 0xefff) >> 7 != 1)
 		return 0;
 
-	printk("sbridge: HANDLING MCE MEMORY ERROR\n");
+	if (edac_log_mce) {
+		printk("sbridge: HANDLING MCE MEMORY ERROR\n");
 
-	printk("CPU %d: Machine Check Exception: %Lx Bank %d: %016Lx\n",
-	       mce->extcpu, mce->mcgstatus, mce->bank, mce->status);
-	printk("TSC %llx ", mce->tsc);
-	printk("ADDR %llx ", mce->addr);
-	printk("MISC %llx ", mce->misc);
+		printk("CPU %d: Machine Check Exception: %Lx Bank %d: %016Lx\n",
+			mce->extcpu, mce->mcgstatus, mce->bank, mce->status);
+		printk("TSC %llx ", mce->tsc);
+		printk("ADDR %llx ", mce->addr);
+		printk("MISC %llx ", mce->misc);
 
-	printk("PROCESSOR %u:%x TIME %llu SOCKET %u APIC %x\n",
-		mce->cpuvendor, mce->cpuid, mce->time,
-		mce->socketid, mce->apicid);
+		printk("PROCESSOR %u:%x TIME %llu SOCKET %u APIC %x\n",
+			mce->cpuvendor, mce->cpuid, mce->time,
+			mce->socketid, mce->apicid);
+	}
 
 #ifdef CONFIG_SMP
 	/* Only handle if it is the right mc controller */
@@ -1887,9 +1893,13 @@ module_exit(sbridge_exit);
 
 module_param(edac_op_state, int, 0444);
 MODULE_PARM_DESC(edac_op_state, "EDAC Error Reporting state: 0=Poll,1=NMI");
+module_param(edac_log_mce, int, 0644);
+MODULE_PARM_DESC(edac_log_mce, "Log EDAC MCE error to console: 0=off,1=on");
+
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mauro Carvalho Chehab <mchehab@redhat.com>");
 MODULE_AUTHOR("Red Hat Inc. (http://www.redhat.com)");
 MODULE_DESCRIPTION("MC Driver for Intel Sandy Bridge memory controllers - "
 		   SBRIDGE_REVISION);
+MODULE_VERSION("1.0.0-ali");

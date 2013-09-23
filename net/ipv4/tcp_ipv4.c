@@ -819,6 +819,8 @@ static struct ip_options *tcp_v4_save_options(struct sock *sk,
 			if (ip_options_echo(dopt, skb)) {
 				kfree_ip_options(dopt);
 				dopt = NULL;
+			} else {
+				rhel_ip_options_set_alloc_flag(dopt);
 			}
 		}
 	}
@@ -1705,6 +1707,7 @@ do_time_wait:
 	case TCP_TW_SYN: {
 		struct sock *sk2 = inet_lookup_listener(dev_net(skb->dev),
 							&tcp_hashinfo,
+							iph->saddr, th->source,
 							iph->daddr, th->dest,
 							inet_iif(skb));
 		if (sk2) {
@@ -1977,7 +1980,9 @@ get_req:
 	}
 get_sk:
 	sk_nulls_for_each_from(sk, node) {
-		if (sk->sk_family == st->family && net_eq(sock_net(sk), net)) {
+		if (!net_eq(sock_net(sk), net))
+			continue;
+		if (sk->sk_family == st->family) {
 			cur = sk;
 			goto out;
 		}

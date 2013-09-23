@@ -23,11 +23,110 @@
 #define DM_SUSPEND_NOFLUSH_FLAG		(1 << 1)
 
 /*
+ * Status feature flags
+ */
+#define DM_STATUS_NOFLUSH_FLAG		(1 << 0)
+
+/*
  * Type of table and mapped_device's mempool
  */
 #define DM_TYPE_NONE		0
 #define DM_TYPE_BIO_BASED	1
 #define DM_TYPE_REQUEST_BASED	2
+
+/* 300s is max disk I/O latency which application may accept */
+#define DM_LATENCY_STATS_S_NR		100
+#define DM_LATENCY_STATS_S_GRAINSIZE	(1000/DM_LATENCY_STATS_S_NR)
+#define DM_LATENCY_STATS_MS_NR		100
+#define DM_LATENCY_STATS_MS_GRAINSIZE	(1000/DM_LATENCY_STATS_MS_NR)
+#define DM_LATENCY_STATS_US_NR		100
+#define DM_LATENCY_STATS_US_GRAINSIZE	(1000/DM_LATENCY_STATS_US_NR)
+
+/*
+ * Work processed by per-device workqueue.
+ */
+struct mapped_device {
+	uint64_t features;	/* 3rd party driver must initialize to zero */
+	struct rw_semaphore io_lock;
+	struct mutex suspend_lock;
+	rwlock_t map_lock;
+	atomic_t holders;
+	atomic_t open_count;
+
+	unsigned long flags;
+
+	struct request_queue *queue;
+	unsigned type;
+	/* Protect queue and type against concurrent access. */
+	struct mutex type_lock;
+
+	struct target_type *immutable_target_type;
+
+	struct gendisk *disk;
+	char name[16];
+
+	void *interface_ptr;
+
+	/*
+	 * A list of ios that arrived while we were suspended.
+	 */
+	atomic_t pending[2];
+	wait_queue_head_t wait;
+	struct work_struct work;
+	struct bio_list deferred;
+	spinlock_t deferred_lock;
+
+	/*
+	 * Processing queue (flush)
+	 */
+	struct workqueue_struct *wq;
+
+	/*
+	 * The current mapping.
+	 */
+	struct dm_table *map;
+
+	/*
+	 * io objects are allocated from here.
+	 */
+	mempool_t *io_pool;
+	mempool_t *tio_pool;
+
+	struct bio_set *bs;
+
+	/*
+	 * Event handling.
+	 */
+	atomic_t event_nr;
+	wait_queue_head_t eventq;
+	atomic_t uevent_seq;
+	struct list_head uevent_list;
+	spinlock_t uevent_lock; /* Protect access to uevent_list */
+
+	/*
+	 * freeze/thaw support require holding onto a super block
+	 */
+	struct super_block *frozen_sb;
+	struct block_device *bdev;
+
+	/* forced geometry settings */
+	struct hd_geometry geometry;
+
+#ifdef __GENKSYMS__
+	make_request_fn *saved_make_request_fn; /* DEPRECATED */
+#endif
+
+	/* sysfs handle */
+	struct kobject kobj;
+
+	/* zero-length flush that will be cloned and submitted to targets */
+	struct bio flush_bio;
+
+	/* latency statistic buckets */
+	atomic_t latency_stats_s[DM_LATENCY_STATS_S_NR];
+	atomic_t latency_stats_ms[DM_LATENCY_STATS_MS_NR];
+	atomic_t latency_stats_us[DM_LATENCY_STATS_US_NR];
+};
 
 /*
  * List of devices that a metadevice uses and should open/close.
@@ -49,6 +148,7 @@ void dm_table_event_callback(struct dm_table *t,
 			     void (*fn)(void *), void *context);
 struct dm_target *dm_table_get_target(struct dm_table *t, unsigned int index);
 struct dm_target *dm_table_find_target(struct dm_table *t, sector_t sector);
+bool dm_table_has_no_data_devices(struct dm_table *table);
 int dm_calculate_queue_limits(struct dm_table *table,
 			      struct queue_limits *limits);
 void dm_table_set_restrictions(struct dm_table *t, struct request_queue *q,

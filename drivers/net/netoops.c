@@ -150,6 +150,11 @@ static void netoops_send_packet(int packet_nr)
 	msg.header.packet_no = cpu_to_le32(packet_nr);
 
 	list_for_each_entry(nt, &targets.list, list) {
+		if (!nt->np.dev) {
+			printk(KERN_WARNING "Warning: netoops nt->np.dev is NULL, state %d\n",
+				nt->np_state);
+			continue;
+		}
 		if (nt->np_state == NETPOLL_ENABLED
 		    && netif_running(nt->np.dev)) {
 			netpoll_send_udp(&nt->np, (char *)&msg, sizeof(msg));

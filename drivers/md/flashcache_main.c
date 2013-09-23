@@ -135,7 +135,7 @@ int dm_io_async_bvec(unsigned int num_regions,
 		while (bio) {
 			next = bio->bi_next;
 			bio->bi_next = NULL;
-			__make_request(q, bio);
+			blk_queue_bio(q, bio);
 			bio = next;
 		}
 	}

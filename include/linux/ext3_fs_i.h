@@ -146,6 +146,10 @@ struct ext3_inode_info {
 	atomic_t i_datasync_tid;
 
 	struct inode vfs_inode;
+
+#ifdef CONFIG_EXT3_FS_SUBTREE
+	__u32 i_subtree;
+#endif
 };
 
 #endif	/* _LINUX_EXT3_FS_I */

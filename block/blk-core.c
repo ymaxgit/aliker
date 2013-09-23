@@ -264,9 +264,10 @@ EXPORT_SYMBOL(blk_remove_plug);
  */
 void blk_drain_queue(struct request_queue *q, bool drain_all)
 {
+	int i;
+
 	while (true) {
 		bool drain = false;
-		int i;
 
 		spin_lock_irq(q->queue_lock);
 
@@ -299,6 +300,24 @@ void blk_drain_queue(struct request_queue *q, bool drain_all)
 			break;
 		msleep(10);
 	}
+
+	/*
+	 * With queue marked dead, any woken up waiter will fail the
+	 * allocation path, so the wakeup chaining is lost and we're
+	 * left with hung waiters. We need to wake up those waiters.
+	 */
+	if (q->request_fn) {
+		struct request_list *rl;
+
+		spin_lock_irq(q->queue_lock);
+
+		blk_queue_for_each_rl(rl, q)
+			for (i = 0; i < ARRAY_SIZE(rl->wait); i++)
+				wake_up_all(&rl->wait[i]);
+
+		spin_unlock_irq(q->queue_lock);
+	}
+
 }
 
 /*
@@ -732,7 +751,7 @@ blk_init_allocated_queue_node(struct request_queue *q, request_fn_proc *rfn,
 	/*
 	 * This also sets hw/phys segments, boundary and size
 	 */
-	blk_queue_make_request(q, __make_request);
+	blk_queue_make_request(q, blk_queue_bio);
 
 	q->sg_reserved_size = INT_MAX;
 
@@ -1120,8 +1139,11 @@ struct request *blk_make_request(struct request_queue *q, struct bio *bio,
 {
 	struct request *rq = blk_get_request(q, bio_data_dir(bio), gfp_mask);
 
-	if (unlikely(!rq))
+	if (unlikely(!rq)) {
+		if (gfp_mask & __GFP_WAIT)
+			return ERR_PTR(-ENODEV);
 		return ERR_PTR(-ENOMEM);
+	}
 
 	for_each_bio(bio) {
 		struct bio *bounce_bio = bio;
@@ -1395,7 +1417,7 @@ static void blk_account_io_front_merge(struct request *req, sector_t newsector)
 	}
 }
 
-int __make_request(struct request_queue *q, struct bio *bio)
+int blk_queue_bio(struct request_queue *q, struct bio *bio)
 {
 	struct request *req;
 	int el_ret;
@@ -1546,7 +1568,7 @@ out_unlock:
 	spin_unlock_irq(q->queue_lock);
 	return 0;
 }
-EXPORT_SYMBOL_GPL(__make_request);
+EXPORT_SYMBOL_GPL(blk_queue_bio);	/* for device mapper only */
 
 /*
  * If bio->bi_dev is a partition, remap the location

@@ -136,6 +136,7 @@ module_exit(edac_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Doug Thompson www.softwarebitmaker.com, et al");
 MODULE_DESCRIPTION("Core library routines for EDAC reporting");
+MODULE_VERSION("1.0.0-ali");
 
 /* refer to *_sysfs.c files for parameters that are exported via sysfs */
 

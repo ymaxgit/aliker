@@ -86,3 +86,15 @@ config EXT3_FS_SECURITY
 
 	  If you are not using a security module that requires using
 	  extended attributes for file security labels, say N.
+
+config EXT3_FS_SUBTREE
+	bool "Ext3 Subtree Id Support"
+	select SUBTREE
+	depends on EXT3_FS_XATTR
+	help
+	  Enables subtree inode identifier support for ext3 filesystem.
+	  This feautre allow to assign extented inode's identifier similar to
+	  uid/gid. Value is stored in xattr "system.subtree" and may be used
+	  as additional quota limit.
+
+	  If unsure, say N.

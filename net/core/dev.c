@@ -127,6 +127,7 @@
 #include <linux/in.h>
 #include <linux/jhash.h>
 #include <linux/random.h>
+#include <linux/openvswitch.h>
 #ifndef __GENKSYMS__
 #include <trace/events/napi.h>
 #include <trace/events/net.h>
@@ -1396,7 +1397,6 @@ int dev_forward_skb(struct net_device *dev, struct sk_buff *skb)
 {
 	skb_orphan(skb);
 
-
 	if (!(dev->flags & IFF_UP) ||
 	    (skb->len > (dev->mtu + dev->hard_header_len))) {
 		kfree_skb(skb);
@@ -1534,6 +1534,53 @@ void netif_set_real_num_tx_queues(struct net_device *dev, unsigned int txq)
 	dev->real_num_tx_queues = txq;
 }
 EXPORT_SYMBOL(netif_set_real_num_tx_queues);
+
+#ifdef CONFIG_RPS
+/**
+ *	netif_set_real_num_rx_queues - set actual number of RX queues used
+ *	@dev: Network device
+ *	@rxq: Actual number of RX queues
+ *
+ *	This must be called either with the rtnl_lock held or before
+ *	registration of the net device.  Returns 0 on success, or a
+ *	negative error code.  If called before registration, it also
+ *	sets the maximum number of queues, and always succeeds.
+ */
+int netif_set_real_num_rx_queues(struct net_device *dev, unsigned int rxq)
+{
+	int rc;
+
+	if (dev->reg_state == NETREG_REGISTERED) {
+		ASSERT_RTNL();
+
+		if (rxq > netdev_extended(dev)->rps_data.num_rx_queues)
+			return -EINVAL;
+
+		rc = net_rx_queue_update_kobjects(dev,
+				netdev_extended(dev)->real_num_rx_queues,
+						  rxq);
+		if (rc)
+			return rc;
+	} else {
+		netdev_extended(dev)->rps_data.num_rx_queues = rxq;
+	}
+
+	netdev_extended(dev)->real_num_rx_queues = rxq;
+	return 0;
+}
+EXPORT_SYMBOL(netif_set_real_num_rx_queues);
+#endif
+
+/* netif_get_num_default_rss_queues - default number of RSS queues
+ *
+ * This routine should set an upper limit on the number of RSS queues
+ * used by default by multiqueue devices.
+ */
+int netif_get_num_default_rss_queues()
+{
+	return min_t(int, DEFAULT_MAX_NUM_RSS_QUEUES, num_online_cpus());
+}
+EXPORT_SYMBOL(netif_get_num_default_rss_queues);
 
 static inline void __netif_reschedule(struct Qdisc *q)
 {
@@ -1827,6 +1874,22 @@ static int dev_gso_segment(struct sk_buff *skb)
 	return 0;
 }
 
+/*
+ * Returns true if either:
+ *	1. skb has frag_list and the device doesn't support FRAGLIST, or
+ *	2. skb is fragmented and the device does not support SG, or if
+ *	   at least one of fragments is in highmem and device does not
+ *	   support DMA from it.
+ */
+static inline int skb_needs_linearize(struct sk_buff *skb,
+				      struct net_device *dev)
+{
+	return skb_is_nonlinear(skb) &&
+	       ((skb_has_frags(skb) && !(dev->features & NETIF_F_FRAGLIST)) ||
+	        (skb_shinfo(skb)->nr_frags && (!(dev->features & NETIF_F_SG) ||
+					      illegal_highdma(dev, skb))));
+}
+
 int dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
 			struct netdev_queue *txq)
 {
@@ -1843,6 +1906,22 @@ int dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev,
 				goto out_kfree_skb;
 			if (skb->next)
 				goto gso;
+		} else {
+			if (skb_needs_linearize(skb, dev) &&
+			    __skb_linearize(skb))
+				goto out_kfree_skb;
+
+			/* If packet is not checksummed and device does not
+			 * support checksumming for this protocol, complete
+			 * checksumming here.
+			 */
+			if (skb->ip_summed == CHECKSUM_PARTIAL) {
+				skb_set_transport_header(skb, skb->csum_start -
+					      skb_headroom(skb));
+				if (!dev_can_checksum(dev, skb) &&
+				     skb_checksum_help(skb))
+					goto out_kfree_skb;
+			}
 		}
 
 		/*
@@ -1996,8 +2075,8 @@ static inline int get_xps_queue(struct net_device *dev, struct sk_buff *skb)
 	return queue_index;
 }
 
-static struct netdev_queue *dev_pick_tx(struct net_device *dev,
-					struct sk_buff *skb)
+struct netdev_queue *netdev_pick_tx(struct net_device *dev,
+				    struct sk_buff *skb)
 {
 	int queue_index;
 	const struct net_device_ops *ops = dev->netdev_ops;
@@ -2075,7 +2154,10 @@ static void skb_update_prio(struct sk_buff *skb)
 
 	if ((!skb->priority) && (skb->sk) && map) {
 		struct sock_extended *ske = sk_extended(skb->sk);
-		skb->priority = map->priomap[ske->__sk_common_extended2.sk_cgrp_prioidx];
+		unsigned int prioidx = ske->__sk_common_extended2.sk_cgrp_prioidx;
+
+		if (prioidx < map->priomap_len)
+			skb->priority = map->priomap[prioidx];
 	}
 }
 #else
@@ -2114,35 +2196,6 @@ int dev_queue_xmit(struct sk_buff *skb)
 	struct Qdisc *q;
 	int rc = -ENOMEM;
 
-	/* GSO will handle the following emulations directly. */
-	if (netif_needs_gso(dev, skb))
-		goto gso;
-
-	if (skb_has_frags(skb) &&
-	    !(dev->features & NETIF_F_FRAGLIST) &&
-	    __skb_linearize(skb))
-		goto out_kfree_skb;
-
-	/* Fragmented skb is linearized if device does not support SG,
-	 * or if at least one of fragments is in highmem and device
-	 * does not support DMA from it.
-	 */
-	if (skb_shinfo(skb)->nr_frags &&
-	    (!(dev->features & NETIF_F_SG) || illegal_highdma(dev, skb)) &&
-	    __skb_linearize(skb))
-		goto out_kfree_skb;
-
-	/* If packet is not checksummed and device does not support
-	 * checksumming for this protocol, complete checksumming here.
-	 */
-	if (skb->ip_summed == CHECKSUM_PARTIAL) {
-		skb_set_transport_header(skb, skb->csum_start -
-					      skb_headroom(skb));
-		if (!dev_can_checksum(dev, skb) && skb_checksum_help(skb))
-			goto out_kfree_skb;
-	}
-
-gso:
 	/* Disable soft irqs for various locks below. Also
 	 * stops preemption for RCU.
 	 */
@@ -2150,7 +2203,7 @@ gso:
 
 	skb_update_prio(skb);
 
-	txq = dev_pick_tx(dev, skb);
+	txq = netdev_pick_tx(dev, skb);
 	q = rcu_dereference(txq->qdisc);
 
 #ifdef CONFIG_NET_CLS_ACT
@@ -2204,7 +2257,6 @@ gso:
 	rc = -ENETDOWN;
 	rcu_read_unlock_bh();
 
-out_kfree_skb:
 	kfree_skb(skb);
 	return rc;
 out:
@@ -2261,10 +2313,11 @@ static int get_rps_cpu(struct net_device *dev, struct sk_buff *skb,
 
 	if (skb_rx_queue_recorded(skb)) {
 		u16 index = skb_get_rx_queue(skb);
-		if (unlikely(index >= rpinfo->num_rx_queues)) {
-			WARN_ONCE(rpinfo->num_rx_queues > 1, "%s received packet "
-				"on queue %u, but number of RX queues is %u\n",
-				dev->name, index, rpinfo->num_rx_queues);
+		if (unlikely(index >= netdev_extended(dev)->real_num_rx_queues)) {
+			WARN_ONCE(netdev_extended(dev)->real_num_rx_queues > 1,
+				  "%s received packet on queue %u, but number "
+				  "of RX queues is %u\n",
+				  dev->name, index, netdev_extended(dev)->real_num_rx_queues);
 			goto done;
 		}
 		rxqueue = rpinfo->_rx + index;
@@ -2649,6 +2702,25 @@ static inline struct sk_buff *handle_macvlan(struct sk_buff *skb,
 #define handle_macvlan(skb, pt_prev, ret, orig_dev)	(skb)
 #endif
 
+struct sk_buff *(*openvswitch_handle_frame_hook)(struct sk_buff *skb)
+	__read_mostly;
+EXPORT_SYMBOL_GPL(openvswitch_handle_frame_hook);
+
+static inline struct sk_buff *handle_openvswitch(struct sk_buff *skb,
+						 struct packet_type **pt_prev,
+						 int *ret,
+						 struct net_device *orig_dev)
+{
+	if (!(skb->dev->priv_flags & IFF_OVS_DATAPATH) || !skb->dev->ax25_ptr)
+		return skb;
+
+	if (*pt_prev) {
+		*ret = deliver_skb(skb, *pt_prev, orig_dev);
+		*pt_prev = NULL;
+	}
+	return openvswitch_handle_frame_hook(skb);
+}
+
 #ifdef CONFIG_NET_CLS_ACT
 /* TODO: Maybe we should just force sch_ingress to be compiled in
  * when CONFIG_NET_CLS_ACT is? otherwise some useless instructions
@@ -2828,6 +2900,9 @@ ncls:
 	if (!skb)
 		goto out;
 	skb = handle_macvlan(skb, &pt_prev, &ret, orig_dev);
+	if (!skb)
+		goto out;
+	skb = handle_openvswitch(skb, &pt_prev, &ret, orig_dev);
 	if (!skb)
 		goto out;
 
@@ -5178,7 +5253,6 @@ int dev_ioctl(struct net *net, unsigned int cmd, void __user *arg)
 	case SIOCBONDCHANGEACTIVE:
 	case SIOCBRADDIF:
 	case SIOCBRDELIF:
-	case SIOCSHWTSTAMP:
 		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
 		/* fall through */
@@ -5188,6 +5262,26 @@ int dev_ioctl(struct net *net, unsigned int cmd, void __user *arg)
 		rtnl_lock();
 		ret = dev_ifsioc(net, &ifr, cmd);
 		rtnl_unlock();
+		return ret;
+
+	case SIOCSHWTSTAMP:
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+		dev_load(net, ifr.ifr_name);
+		rtnl_lock();
+		ret = dev_ifsioc(net, &ifr, cmd);
+		rtnl_unlock();
+		if (!ret) {
+			static bool ptp_tech_previewed = false;
+
+			if (!ptp_tech_previewed) {
+				mutex_lock(&module_mutex);
+				mark_tech_preview("IEEE 1588 (PTP)",
+						  find_module("ptp"));
+				mutex_unlock(&module_mutex);
+				ptp_tech_previewed = true;
+			}
+		}
 		return ret;
 
 	case SIOCGIFMEM:
@@ -5378,6 +5472,33 @@ static int netif_alloc_rx_queues(struct net_device *dev)
 		rx[i].dev = dev;
 	return 0;
 }
+
+/**
+ *	netif_stacked_transfer_operstate -	transfer operstate
+ *	@rootdev: the root or lower level device to transfer state from
+ *	@dev: the device to transfer operstate to
+ *
+ *	Transfer operational state from root to device. This is normally
+ *	called when a stacking relationship exists between the root
+ *	device and the device(a leaf device).
+ */
+void netif_stacked_transfer_operstate(const struct net_device *rootdev,
+					struct net_device *dev)
+{
+	if (rootdev->operstate == IF_OPER_DORMANT)
+		netif_dormant_on(dev);
+	else
+		netif_dormant_off(dev);
+
+	if (netif_carrier_ok(rootdev)) {
+		if (!netif_carrier_ok(dev))
+			netif_carrier_on(dev);
+	} else {
+		if (netif_carrier_ok(dev))
+			netif_carrier_off(dev);
+	}
+}
+EXPORT_SYMBOL(netif_stacked_transfer_operstate);
 
 /**
  *	register_netdevice	- register a network device
@@ -5921,6 +6042,8 @@ struct net_device *alloc_netdev_mqs(int sizeof_priv, const char *name,
 				  ((char *) dev + NET_DEVICE_SIZE + sizeof_priv);
 
 	netdev_extended(dev)->rps_data.num_rx_queues = rxqs;
+	netdev_extended(dev)->real_num_rx_queues = rxqs;
+
 	if (netif_alloc_rx_queues(dev)) {
 		printk(KERN_ERR "alloc_netdev: Unable to allocate "
 		       "rx queues.\n");
@@ -6294,7 +6417,8 @@ static struct hlist_head *netdev_create_hash(void)
 /* Initialize per network namespace state */
 static int __net_init netdev_init(struct net *net)
 {
-	INIT_LIST_HEAD(&net->dev_base_head);
+	if (net != &init_net)
+		INIT_LIST_HEAD(&net->dev_base_head);
 
 	net->dev_name_head = netdev_create_hash();
 	if (net->dev_name_head == NULL)

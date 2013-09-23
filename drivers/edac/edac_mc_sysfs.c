@@ -19,7 +19,7 @@
 
 /* MC EDAC Controls, setable by module parameter, and sysfs */
 static int edac_mc_log_ue = 1;
-static int edac_mc_log_ce = 1;
+static int edac_mc_log_ce = 0;
 static int edac_mc_panic_on_ue;
 static int edac_mc_poll_msec = 1000;
 
@@ -1060,4 +1060,3 @@ void edac_sysfs_teardown_mc_kset(void)
 	kset_unregister(mc_kset);
 	edac_put_sysfs_class();
 }
-

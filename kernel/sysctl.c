@@ -100,6 +100,9 @@ extern int sysctl_enable_cnx_ra;
 extern int sysctl_mlock_flush_pagevec;
 extern int vm_enable_legacy_mm;
 extern int sysctl_enable_bio_netoops;
+/* bz790921 */
+int unmap_area_factor_sysctl_handler(ctl_table *table, int write,
+			void __user *buffer, size_t *length, loff_t *ppos);
 
 int exec_shield = (1<<0);
 /* exec_shield is a bitmask:
@@ -1411,6 +1414,14 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= &free_kbytes_sysctl_handler,
 		.strategy	= &sysctl_intvec,
 		.extra1		= &zero,
+	},
+	{
+		.procname       = "unmap_area_factor",
+		.data           = &sysctl_unmap_area_factor,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = unmap_area_factor_sysctl_handler,
+		.strategy       = &sysctl_intvec,
 	},
 	{
 		.ctl_name	= VM_PERCPU_PAGELIST_FRACTION,

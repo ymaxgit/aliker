@@ -29,6 +29,7 @@
 
 #include "xattr.h"
 #include "acl.h"
+#include "subtree.h"
 
 /*
  * ialloc.c contains the inodes allocation and deallocation routines
@@ -595,6 +596,8 @@ got:
 		ei->i_extra_isize = 0;
 	}
 
+	ext3_set_subtree(inode, ext3_get_subtree(dir));
+
 	ret = inode;
 	if (vfs_dq_alloc_inode(inode)) {
 		err = -EDQUOT;
@@ -608,6 +611,12 @@ got:
 	err = ext3_init_security(handle,inode, dir);
 	if (err)
 		goto fail_free_drop;
+
+	if (ext3_get_subtree(dir)) {
+		err = ext3_subtree_init(handle, inode);
+		if (err)
+			goto fail_free_drop;
+	}
 
 	err = ext3_mark_inode_dirty(handle, inode);
 	if (err) {

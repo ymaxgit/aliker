@@ -27,10 +27,22 @@
 #include <linux/slab.h>
 #include <linux/rbtree.h>
 #include "ext4.h"
-#include "xattr.h"
+
+static unsigned char ext4_filetype_table[] = {
+	DT_UNKNOWN, DT_REG, DT_DIR, DT_CHR, DT_BLK, DT_FIFO, DT_SOCK, DT_LNK
+};
 
 static int ext4_dx_readdir(struct file *filp,
 			   void *dirent, filldir_t filldir);
+
+static unsigned char get_dtype(struct super_block *sb, int filetype)
+{
+	if (!EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_FILETYPE) ||
+	    (filetype >= EXT4_FT_MAX))
+		return DT_UNKNOWN;
+
+	return (ext4_filetype_table[filetype]);
+}
 
 /**
  * Check if the given dir-inode refers to an htree-indexed directory
@@ -54,7 +66,7 @@ static int is_dx_dir(struct inode *inode)
 
 int ext4_check_dir_entry(const char *function, struct inode *dir,
 			 struct ext4_dir_entry_2 *de,
-			 struct buffer_head *bh, char *buf, int size,
+			 struct buffer_head *bh,
 			 unsigned int offset)
 {
 	const char *error_msg = NULL;
@@ -67,23 +79,23 @@ int ext4_check_dir_entry(const char *function, struct inode *dir,
 		error_msg = "rec_len % 4 != 0";
 	else if (unlikely(rlen < EXT4_DIR_REC_LEN(de->name_len)))
 		error_msg = "rec_len is too small for name_len";
-	else if (unlikely(((char *) de - buf) + rlen > size))
-		error_msg = "directory entry across range";
+	else if (unlikely(((char *) de - bh->b_data) + rlen > dir->i_sb->s_blocksize))
+		error_msg = "directory entry across blocks";
 	else if (unlikely(le32_to_cpu(de->inode) >
 			le32_to_cpu(EXT4_SB(dir->i_sb)->s_es->s_inodes_count)))
 		error_msg = "inode out of bounds";
 	else
-		return 0;
+		return 1;
 
 	__ext4_error(dir->i_sb, function,
 		"bad entry in directory #%lu: %s - block=%llu"
 		"offset=%u(%u), inode=%u, rec_len=%d, name_len=%d",
 		dir->i_ino, error_msg, 
 		(unsigned long long) bh->b_blocknr,     
-		(unsigned) (offset%size), offset,
+		(unsigned) (offset%bh->b_size), offset,
 		le32_to_cpu(de->inode),
 		rlen, de->name_len);
-	return 1;
+	return 0;
 }
 
 static int ext4_readdir(struct file *filp,
@@ -98,12 +110,6 @@ static int ext4_readdir(struct file *filp,
 	struct super_block *sb = inode->i_sb;
 	int ret = 0;
 	int dir_has_error = 0;
-
-	if (ext4_has_inline_data(inode)) {
-		ret = ext4_read_inline_dir(filp, dirent, filldir);
-		if (ret > 0 || ret < 0)
-			return ret;
-	}
 
 	if (is_dx_dir(inode)) {
 		err = ext4_dx_readdir(filp, dirent, filldir);
@@ -192,9 +198,8 @@ revalidate:
 		while (!error && filp->f_pos < inode->i_size
 		       && offset < sb->s_blocksize) {
 			de = (struct ext4_dir_entry_2 *) (bh->b_data + offset);
-			if (ext4_check_dir_entry("ext4_readdir", inode, de,
-						  bh, bh->b_data, bh->b_size,
-						  offset)) {
+			if (!ext4_check_dir_entry("ext4_readdir", inode, de,
+						  bh, offset)) {
 				/*
 				 * On error, skip the f_pos to the next block
 				 */

@@ -102,6 +102,20 @@ int sysctl_max_map_count __read_mostly = DEFAULT_MAX_MAP_COUNT;
 struct percpu_counter vm_committed_as;
 
 /*
+ * The global memory commitment made in the system can be a metric
+ * that can be used to drive ballooning decisions when Linux is hosted
+ * as a guest. On Hyper-V, the host implements a policy engine for dynamically
+ * balancing memory across competing virtual machines that are hosted.
+ * Several metrics drive this policy engine including the guest reported
+ * memory commitment.
+ */
+unsigned long vm_memory_committed(void)
+{
+	return percpu_counter_read_positive(&vm_committed_as);
+}
+EXPORT_SYMBOL_GPL(vm_memory_committed);
+
+/*
  * Check that a process has enough memory to allocate a new virtual
  * mapping. 0 means there is enough memory for the allocation to
  * succeed and -ENOMEM implies there is not.
@@ -616,8 +630,12 @@ again:			remove_next = 1 + (end > next->vm_end);
 	 */
 	if (vma->anon_vma && (insert || importer || start != vma->vm_start)) {
 		anon_vma = vma->anon_vma;
+		VM_BUG_ON(adjust_next && next->anon_vma &&
+			  anon_vma != next->anon_vma);
+	} else if (adjust_next && next->anon_vma)
+		anon_vma = next->anon_vma;
+	if (anon_vma)
 		anon_vma_lock(anon_vma);
-	}
 
 	if (root) {
 		flush_dcache_mmap_lock(mapping);
@@ -1330,6 +1348,34 @@ unacct_error:
 	return error;
 }
 
+/*
+ * bz790921 add-on:
+ * If sysctl_unmap_area_factor is zero, use the default first-fit
+ * memory allocation algorithm, which uses mm->cached_hole_size to
+ * remember the size of the largest free memory hole between mm->mmap_base
+ * and mm->free_area_cache. When doing an allocation smaller than
+ * mm->cached_hole_size, it starts searching at mm->mmap_base.
+ * If sysctl_unmap_area_factor is non-zero, use a more time-efficient
+ * (but more wasteful of virtual memory) next-fit algorithm. This code
+ * always starts searching for a free area at mm->free_area_cache, which
+ * is reset to mm->mmap_base after more than 1/unmap_area of the process's
+ * memory has been munmapped. This policy uses mm->cached_hole_size to count
+ * how much memory has been munmapped since the last time mm->free_area_cache
+ * has been reset.
+ */
+unsigned int sysctl_unmap_area_factor __read_mostly = 0;
+
+int unmap_area_factor_sysctl_handler(ctl_table *table, int write,
+                       void __user *buffer, size_t *length, loff_t *ppos)
+{
+	int ret = proc_dointvec(table, write, buffer, length, ppos);
+	if (write) {
+		if (sysctl_unmap_area_factor > PAGE_SIZE - 1)
+			sysctl_unmap_area_factor = PAGE_SIZE - 1;
+	}
+	return ret;
+}
+
 /* Get an address range which is currently unmapped.
  * For shmat() with addr=0.
  *
@@ -1349,6 +1395,7 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
 	unsigned long start_addr;
+	unsigned int unmap_factor = sysctl_unmap_area_factor;
 
 	if (len > TASK_SIZE)
 		return -ENOMEM;
@@ -1364,7 +1411,8 @@ arch_get_unmapped_area(struct file *filp, unsigned long addr,
 		    (addr >= mmap_min_addr))
 			return addr;
 	}
-	if (len > mm->cached_hole_size) {
+
+	if (len > mm->cached_hole_size || unmap_factor) {
 	        start_addr = addr = mm->free_area_cache;
 	} else {
 	        start_addr = addr = TASK_UNMAPPED_BASE;
@@ -1382,7 +1430,8 @@ full_search:
 			if (start_addr != TASK_UNMAPPED_BASE) {
 				addr = TASK_UNMAPPED_BASE;
 			        start_addr = addr;
-				mm->cached_hole_size = 0;
+				if (likely(!unmap_factor))
+					mm->cached_hole_size = 0;
 				goto full_search;
 			}
 			return -ENOMEM;
@@ -1395,8 +1444,10 @@ full_search:
 			mm->free_area_cache = addr + len;
 			return addr;
 		}
-		if (addr + mm->cached_hole_size < vma->vm_start)
+		if (!unmap_factor &&
+				addr + mm->cached_hole_size < vma->vm_start)
 		        mm->cached_hole_size = vma->vm_start - addr;
+
 		addr = vma->vm_end;
 	}
 }
@@ -1404,12 +1455,25 @@ full_search:
 
 void arch_unmap_area(struct mm_struct *mm, unsigned long addr)
 {
-	/*
-	 * Is this a new hole at the lowest possible address?
-	 */
-	if (addr >= TASK_UNMAPPED_BASE && addr < mm->free_area_cache) {
-		mm->free_area_cache = addr;
-		mm->cached_hole_size = ~0UL;
+	int unmap_factor = sysctl_unmap_area_factor;
+	if (likely(!unmap_factor)) {
+		/*
+		 * Is this a new hole at the lowest possible address?
+		 */
+		if (addr >= TASK_UNMAPPED_BASE && addr < mm->free_area_cache) {
+			mm->free_area_cache = addr;
+			mm->cached_hole_size = ~0UL;
+		}
+	} else {
+		/*
+		 * Go back to first-fit search once more than 1/(factor)th
+		 * of normal process memory has been unmapped.
+		 */
+		if (mm->cached_hole_size >
+		    (mm->total_vm - mm->reserved_vm) / unmap_factor) {
+			mm->free_area_cache = TASK_UNMAPPED_BASE;
+			mm->cached_hole_size = 0UL;
+		}
 	}
 }
 
@@ -1426,6 +1490,8 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 	struct vm_area_struct *vma;
 	struct mm_struct *mm = current->mm;
 	unsigned long addr = addr0;
+	unsigned int unmap_factor = sysctl_unmap_area_factor;
+	int firsttime = 1;
 
 	/* requested length too big for entire address space */
 	if (len > TASK_SIZE)
@@ -1444,12 +1510,13 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 	}
 
 	/* check if free_area_cache is useful for us */
-	if (len <= mm->cached_hole_size) {
+	if (len <= mm->cached_hole_size && !unmap_factor) {
  	        mm->cached_hole_size = 0;
  		mm->free_area_cache = mm->mmap_base;
  	}
 
-	/* either no address requested or can't fit in requested address hole */
+ again:
+	/* use a next fit algorithm to quickly find a free area */
 	addr = mm->free_area_cache;
 
 	/* make sure it can fit in the remaining address space */
@@ -1464,8 +1531,6 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 
 	if (mm->mmap_base < len)
 		goto bottomup;
-
-	addr = mm->mmap_base-len;
 
 	do {
 		/*
@@ -1482,13 +1547,26 @@ arch_get_unmapped_area_topdown(struct file *filp, const unsigned long addr0,
 			return (mm->free_area_cache = addr);
 		}
 
- 		/* remember the largest hole we saw so far */
- 		if (addr + mm->cached_hole_size < vma->vm_start)
+		/* remember the largest hole we saw so far */
+		if (!unmap_factor &&
+				addr + mm->cached_hole_size < vma->vm_start)
  		        mm->cached_hole_size = vma->vm_start - addr;
 
 		/* try just below the current vma->vm_start */
 		addr = vma->vm_start-len;
 	} while (len < vma->vm_start);
+
+	/*
+	 * Using the next-fit algorithm, it is possible we started
+	 * searching below usable address space holes. Go back to the
+	 * top and start over.
+	 */
+	if (unmap_factor && firsttime) {
+		mm->free_area_cache = mm->mmap_base;
+		mm->cached_hole_size = 0;
+		firsttime = 0;
+		goto again;
+	}
 
 bottomup:
 	/*
@@ -1497,14 +1575,16 @@ bottomup:
 	 * can happen with large stack limits and large mmap()
 	 * allocations.
 	 */
-	mm->cached_hole_size = ~0UL;
+	if (likely(!unmap_factor))
+		mm->cached_hole_size = ~0UL;
   	mm->free_area_cache = TASK_UNMAPPED_BASE;
 	addr = arch_get_unmapped_area(filp, addr0, len, pgoff, flags);
 	/*
 	 * Restore the topdown base:
 	 */
 	mm->free_area_cache = mm->mmap_base;
-	mm->cached_hole_size = ~0UL;
+	if (likely(!unmap_factor))
+		mm->cached_hole_size = ~0UL;
 
 	return addr;
 }
@@ -1512,15 +1592,28 @@ bottomup:
 
 void arch_unmap_area_topdown(struct mm_struct *mm, unsigned long addr)
 {
-	/*
-	 * Is this a new hole at the highest possible address?
-	 */
-	if (addr > mm->free_area_cache)
-		mm->free_area_cache = addr;
+	unsigned int unmap_factor = sysctl_unmap_area_factor;
+	if (likely(!unmap_factor)) {
+		/*
+		 * Is this a new hole at the highest possible address?
+		 */
+		if (addr > mm->free_area_cache)
+			mm->free_area_cache = addr;
 
-	/* dont allow allocations above current base */
-	if (mm->free_area_cache > mm->mmap_base)
-		mm->free_area_cache = mm->mmap_base;
+		/* dont allow allocations above current base */
+		if (mm->free_area_cache > mm->mmap_base)
+			mm->free_area_cache = mm->mmap_base;
+	} else {
+		/*
+		 * Go back to first-fit search once more than 1/(factor)th
+		 * of normal process memory has been unmapped.
+		 */
+		if (mm->cached_hole_size >
+		    (mm->total_vm - mm->reserved_vm) / unmap_factor) {
+			mm->free_area_cache = mm->mmap_base;
+			mm->cached_hole_size = 0UL;
+		}
+	}
 }
 
 unsigned long
@@ -1936,12 +2029,15 @@ find_extend_vma(struct mm_struct * mm, unsigned long addr)
  */
 static void remove_vma_list(struct mm_struct *mm, struct vm_area_struct *vma)
 {
+	unsigned int unmap_factor = sysctl_unmap_area_factor;
 	/* Update high watermark before we lower total_vm */
 	update_hiwater_vm(mm);
 	do {
 		long nrpages = vma_pages(vma);
 
 		mm->total_vm -= nrpages;
+		if (unlikely(unmap_factor))
+			mm->cached_hole_size += nrpages;
 		vm_stat_account(mm, vma->vm_flags, vma->vm_file, -nrpages);
 		vma = remove_vma(vma);
 	} while (vma);

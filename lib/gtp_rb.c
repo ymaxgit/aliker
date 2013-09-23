@@ -19,6 +19,7 @@
  *
  */
 
+/* Following macros is for page of ring buffer.  */
 #define ADDR_SIZE		sizeof(size_t)
 #define GTP_RB_HEAD(addr)	((void *)((size_t)(addr) & PAGE_MASK))
 #define GTP_RB_DATA(addr)	(GTP_RB_HEAD(addr) + ADDR_SIZE)
@@ -30,11 +31,32 @@
 
 struct gtp_rb_s {
 	spinlock_t	lock;
+
+	/* Pointer to the prev frame entry head.
+	   */
+	void		*prev_frame;
+
+	/* When write, this is the next address to be write.
+	   When read, this is the end of read.  */
 	void		*w;
+
+	/* When alloc memory from rb, record prev value W to PREV_W.
+	   When this memory doesn't need, set W back to PREV_W to release
+	   this memroy.  */
 	void		*prev_w;
+
+	/* Point to the begin of ring buffer.  Read will begin from R.  */
 	void		*r;
+
+	/* Point to the trace frame entry head of current read.  */
 	void		*rp;
+
+	/* This the id of rp point to.
+	   0 means rp doesn't point to a trace frame entry.
+	   So it need call gtp_rb_walk first.  */
 	u64		rp_id;
+
+	/* The cpu id.  */
 	int		cpu;
 };
 
@@ -90,6 +112,7 @@ gtp_rb_reset(void)
 		rb->r = rb->w;
 		rb->rp = NULL;
 		rb->rp_id = 0;
+		rb->prev_frame = NULL;
 	}
 
 #if defined(CONFIG_ARM) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34))
@@ -103,11 +126,18 @@ gtp_rb_reset(void)
 static inline u64
 gtp_rb_clock(void)
 {
+	u64	ret;
+
+re_inc:
 #if defined(CONFIG_ARM) && (LINUX_VERSION_CODE < KERNEL_VERSION(2,6,34))
-	return (u64)atomic_inc_return(&gtp_rb_count);
+	ret = (u64)atomic_inc_return(&gtp_rb_count);
 #else
-	return atomic64_inc_return(&gtp_rb_count);
+	ret = atomic64_inc_return(&gtp_rb_count);
 #endif
+	if (ret == 0)
+		goto re_inc;
+
+	return ret;
 }
 
 #define GTP_RB_PAGE_IS_EMPTY	(gtp_rb_page_count == 0)
@@ -190,6 +220,18 @@ gtp_rb_page_free(void)
 #define GTP_RB_UNLOCK_IRQ(r, flags)	spin_unlock_irqrestore(&r->lock, flags)
 #define GTP_RB_RELEASE(r)		(r->prev_w = r->w)
 
+static inline void *
+gtp_rb_prev_frame_get(struct gtp_rb_s *rb)
+{
+	return rb->prev_frame;
+}
+
+static inline void
+gtp_rb_prev_frame_set(struct gtp_rb_s *rb, void *prev_frame)
+{
+	rb->prev_frame = prev_frame;
+}
+
 static void *
 gtp_rb_alloc(struct gtp_rb_s *rb, size_t size, u64 id)
 {
@@ -249,30 +291,45 @@ enum gtp_rb_walk_reason {
 
 /* Check *end.  */
 #define GTP_RB_WALK_CHECK_END	0x1
+
 /* When to the end of a page, goto next one.  */
 #define GTP_RB_WALK_PASS_PAGE	0x2
-/* When to the end of a entry, goto next one.  */
+
+/* When to the end of a entry, goto next one.
+   If not set, stop in the first address of next entry and
+   set S->REASON to gtp_rb_walk_new_entry.  */
 #define GTP_RB_WALK_PASS_ENTRY	0x4
-/* Check with id and FID_PAGE_BEGIN to make sure this is the current frame. */
+
+/* Check with id and FID_PAGE_BEGIN to make sure this is the current frame.  */
 #define GTP_RB_WALK_CHECK_ID	0x8
-/* Return ff type is same in buffer.  */
+
+/* Return and set S->REASON to gtp_rb_walk_type if type is same entry type.  */
 #define GTP_RB_WALK_CHECK_TYPE	0x10
-/* Return ff type is same in buffer.  */
+
+/* Walk STEP step in ring_buffer, just record FID_REG, FID_MEM, FID_VAR.  */
 #define GTP_RB_WALK_STEP	0x20
 
 struct gtp_rb_walk_s {
 	unsigned int		flags;
+
 	/* Reason for return.  */
 	enum gtp_rb_walk_reason	reason;
-	/* GTP_RB_WALK_CHECK_END */
+
+	/* GTP_RB_WALK_CHECK_END,
+	   it will point to the end of this ring buffer.  */
 	void			*end;
+
 	/* GTP_RB_WALK_CHECK_ID */
 	u64			id;
+
 	/* GTP_RB_WALK_CHECK_TYPE */
 	FID_TYPE		type;
+
 	/* GTP_RB_WALK_STEP */
 	int			step;
 };
+
+/* Walk in ring buffer RET according to S.  And return the new pointer.  */
 
 static void *
 gtp_rb_walk(struct gtp_rb_walk_s *s, void *ret)
@@ -363,8 +420,19 @@ out:
 	return ret;
 }
 
+static void *
+gtp_rb_walk_reverse(void *buf, void *begin)
+{
+	if (buf == begin)
+		return NULL;
+	buf = *(void **)(buf + FID_SIZE + sizeof(u64) + sizeof(ULONGEST));
+
+	return buf;
+}
+
 static struct gtp_rb_s	*gtp_frame_current_rb;
 static u64		gtp_frame_current_id;
+static struct pt_regs	*gtp_frame_current_regs;
 
 static void
 gtp_rb_read_reset(void)
@@ -380,6 +448,16 @@ gtp_rb_read_reset(void)
 	}
 	gtp_frame_current_num = -1;
 	gtp_frame_current_rb = NULL;
+}
+
+static void
+gtp_rb_update_gtp_frame_current(void)
+{
+	gtp_frame_current_id = *(u64 *)(gtp_frame_current_rb->rp + FID_SIZE);
+	gtp_frame_current_tpe = *(ULONGEST *)(gtp_frame_current_rb->rp
+					      + FID_SIZE + sizeof(u64));
+	gtp_frame_current_rb->rp += FRAME_ALIGN(GTP_FRAME_HEAD_SIZE);
+	gtp_frame_current_regs = NULL;
 }
 
 static int
@@ -419,11 +497,7 @@ gtp_rb_read(void)
 	}
 
 	gtp_frame_current_rb->rp_id = 0;
-	gtp_frame_current_id = *(u64 *)(gtp_frame_current_rb->rp + FID_SIZE);
-	gtp_frame_current_tpe = *(ULONGEST *)(gtp_frame_current_rb->rp
-					      + FID_SIZE + sizeof(u64));
-	gtp_frame_current_rb->rp += FRAME_ALIGN(GTP_FRAME_HEAD_SIZE);
-
+	gtp_rb_update_gtp_frame_current();
 	gtp_frame_current_num += 1;
 
 	return 0;

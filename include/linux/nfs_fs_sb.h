@@ -22,6 +22,7 @@ struct nfs4_minor_version_ops;
  */
 struct nfs_client {
 	atomic_t		cl_count;
+	atomic_t		cl_mds_count;
 	int			cl_cons_state;	/* current construction state (-ve: init error) */
 #define NFS_CS_READY		0		/* ready to be used */
 #define NFS_CS_INITING		1		/* busy initialising */
@@ -53,7 +54,6 @@ struct nfs_client {
 	struct rb_root		cl_openowner_id;
 	struct rb_root		cl_lockowner_id;
 
-	struct list_head	cl_delegations;
 	struct rb_root		cl_state_owners;
 	spinlock_t		cl_lock;
 
@@ -82,7 +82,6 @@ struct nfs_client {
 	/* The flags used for obtaining the clientid during EXCHANGE_ID */
 	u32			cl_exchange_flags;
 	struct nfs4_session	*cl_session; 	/* sharred session */
-	struct list_head	cl_layouts;
 #endif /* CONFIG_NFS_V4 */
 
 #ifdef CONFIG_NFS_FSCACHE
@@ -149,6 +148,8 @@ struct nfs_server {
 	struct pnfs_layoutdriver_type  *pnfs_curr_ld; /* Active layout driver */
 	struct rpc_wait_queue	roc_rpcwaitq;
 #endif
+	struct list_head	layouts;
+	struct list_head        delegations;
 	void (*destroy)(struct nfs_server *);
 
 	atomic_t active; /* Keep trace of any activity to this server */

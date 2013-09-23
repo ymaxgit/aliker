@@ -51,6 +51,12 @@
 #define INET_ADDRSTRLEN		(16)
 #define INET6_ADDRSTRLEN	(48)
 
+static inline u32 inet_next_pseudo_random32(u32 seed)
+{
+	/* Pseudo random number generator from numerical recipes */
+	return seed * 1664525 + 1013904223;
+}
+
 extern __be32 in_aton(const char *str);
 extern int in4_pton(const char *src, int srclen, u8 *dst, int delim, const char **end);
 extern int in6_pton(const char *src, int srclen, u8 *dst, int delim, const char **end);

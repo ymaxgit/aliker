@@ -111,7 +111,6 @@ static int __init init_netconsole(void)
 	targets.default_local_port = 6665;
 	targets.default_remote_port = 6666;
 
-	config[MAX_PARAM_LENGTH - 1] = '\0';
 	err = register_netpoll_targets("netconsole", &targets, config);
 	if (err)
 		return err;

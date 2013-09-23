@@ -684,10 +684,14 @@ void rtas_os_term(char *str)
 {
 	int status;
 
-	if (panic_timeout)
-		return;
-
-	if (RTAS_UNKNOWN_SERVICE == rtas_token("ibm,os-term"))
+	/*
+	 * Firmware with the ibm,extended-os-term property is guaranteed
+	 * to always return from an ibm,os-term call. Earlier versions without
+	 * this property may terminate the partition which we want to avoid
+	 * since it interferes with panic_timeout.
+	 */
+	if (RTAS_UNKNOWN_SERVICE == rtas_token("ibm,os-term") ||
+	    RTAS_UNKNOWN_SERVICE == rtas_token("ibm,extended-os-term"))
 		return;
 
 	snprintf(rtas_os_term_buf, 2048, "OS panic: %s", str);
@@ -698,8 +702,7 @@ void rtas_os_term(char *str)
 	} while (rtas_busy_delay(status));
 
 	if (status != 0)
-		printk(KERN_EMERG "ibm,os-term call failed %d\n",
-			       status);
+		printk(KERN_EMERG "ibm,os-term call failed %d\n", status);
 }
 
 static int ibm_suspend_me_token = RTAS_UNKNOWN_SERVICE;
@@ -758,7 +761,6 @@ static int __rtas_suspend_cpu(struct rtas_suspend_me_data *data, int wake_when_d
 	unsigned long msr_save;
 	int cpu;
 
-	stop_topology_update();
 	atomic_inc(&data->working);
 
 	/* really need to ensure MSR.EE is off for H_JOIN */
@@ -790,7 +792,6 @@ static int __rtas_suspend_cpu(struct rtas_suspend_me_data *data, int wake_when_d
 		/* Ensure data->done is seen on all CPUs that are about to wake up
 		 as a result of the H_PROD below */
 		mb();
-		start_topology_update();
 		pSeries_coalesce_init();
 
 		/* This cpu did the suspend or got an error; in either case,
@@ -851,6 +852,7 @@ static int rtas_ibm_suspend_me(struct rtas_args *args)
 	data.error = 0;
 	data.token = rtas_token("ibm,suspend-me");
 	data.complete = &done;
+	stop_topology_update();
 
 	/* Call function on all CPUs.  One of us will make the
 	 * rtas call
@@ -862,6 +864,8 @@ static int rtas_ibm_suspend_me(struct rtas_args *args)
 
 	if (data.error != 0)
 		printk(KERN_ERR "Error doing global join\n");
+
+	start_topology_update();
 
 	return data.error;
 }

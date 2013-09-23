@@ -56,6 +56,11 @@ static inline void put_pid_ns(struct pid_namespace *ns)
 		kref_put(&ns->kref, free_pid_ns);
 }
 
+static inline bool in_noninit_pid_ns(struct pid_namespace *ns)
+{
+	return ns != &init_pid_ns;
+}
+
 #else /* !CONFIG_PID_NS */
 #include <linux/err.h>
 
@@ -76,6 +81,10 @@ static inline void put_pid_ns(struct pid_namespace *ns)
 {
 }
 
+static inline bool in_noninit_pid_ns(struct pid_namespace *ns)
+{
+	return false;
+}
 
 static inline void zap_pid_ns_processes(struct pid_namespace *ns)
 {

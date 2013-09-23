@@ -6,6 +6,7 @@
 #include <linux/percpu.h>
 #include <linux/cpumask.h>
 #include <linux/interrupt.h>
+#include <linux/sched.h>
 #include <asm/irq.h>
 #include <asm/cputime.h>
 
@@ -15,20 +16,27 @@
  * used by rstatd/perfmeter
  */
 
-struct cpu_usage_stat {
-	cputime64_t user;
-	cputime64_t nice;
-	cputime64_t system;
-	cputime64_t softirq;
-	cputime64_t irq;
-	cputime64_t idle;
-	cputime64_t iowait;
-	cputime64_t steal;
-	cputime64_t guest;
+enum cpu_usage_stat {
+	CPUTIME_USER,
+	CPUTIME_NICE,
+	CPUTIME_SYSTEM,
+	CPUTIME_SOFTIRQ,
+	CPUTIME_IRQ,
+	CPUTIME_IDLE,
+	CPUTIME_IDLE_BASE,
+	CPUTIME_IOWAIT,
+	CPUTIME_IOWAIT_BASE,
+	CPUTIME_STEAL,
+	CPUTIME_STEAL_BASE,
+	CPUTIME_GUEST,
+	NR_STATS,
+};
+
+struct kernel_cpustat {
+	u64 cpustat[NR_STATS];
 };
 
 struct kernel_stat {
-	struct cpu_usage_stat	cpustat;
 #ifndef CONFIG_GENERIC_HARDIRQS
        unsigned int irqs[NR_IRQS];
 #endif
@@ -37,10 +45,13 @@ struct kernel_stat {
 };
 
 DECLARE_PER_CPU(struct kernel_stat, kstat);
+DECLARE_PER_CPU(struct kernel_cpustat, kernel_cpustat);
 
-#define kstat_cpu(cpu)	per_cpu(kstat, cpu)
 /* Must have preemption disabled for this to be meaningful. */
-#define kstat_this_cpu	__get_cpu_var(kstat)
+#define kstat_this_cpu (&__get_cpu_var(kstat))
+#define kcpustat_this_cpu (&__get_cpu_var(kernel_cpustat))
+#define kstat_cpu(cpu) per_cpu(kstat, cpu)
+#define kcpustat_cpu(cpu) per_cpu(kernel_cpustat, cpu)
 
 extern unsigned long long nr_context_switches(void);
 extern void nr_context_switches_cpu(struct seq_file *p);
@@ -55,8 +66,8 @@ struct irq_desc;
 static inline void kstat_incr_irqs_this_cpu(unsigned int irq,
 					    struct irq_desc *desc)
 {
-	kstat_this_cpu.irqs[irq]++;
-	kstat_this_cpu.irqs_sum++;
+	kstat_this_cpu->irqs[irq]++;
+	kstat_this_cpu->irqs_sum++;
 }
 
 static inline unsigned int kstat_irqs_cpu(unsigned int irq, int cpu)
@@ -70,13 +81,13 @@ extern unsigned int kstat_irqs_cpu(unsigned int irq, int cpu);
 	((DESC)->kstat_irqs[smp_processor_id()])
 #define kstat_incr_irqs_this_cpu(irqno, DESC) do {\
 	((DESC)->kstat_irqs[smp_processor_id()]++);\
-	kstat_this_cpu.irqs_sum++; } while (0)
+	kstat_this_cpu->irqs_sum++; } while (0)
 
 #endif
 
 static inline void kstat_incr_softirqs_this_cpu(unsigned int irq)
 {
-	kstat_this_cpu.softirqs[irq]++;
+	kstat_this_cpu->softirqs[irq]++;
 }
 
 static inline unsigned int kstat_softirqs_cpu(unsigned int irq, int cpu)

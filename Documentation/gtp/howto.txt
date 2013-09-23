@@ -3,15 +3,23 @@
 		By Hui Zhu <teawater@gmail.com>
 		https://code.google.com/p/kgtp/wiki/HOWTO
 
-Update in 2012-09-20
+Update in 2013-05-08
 
 What is KGTP
 Get help or report issues about KGTP
+Table of different between GDB debug normal program and KGTP
 Preparatory work before use KGTP
 Linux kernel
 If your system use the Linux kernel that is built by yourself
 If your system use the Linux kernel from distribution
+Ubuntu
+Fedora
+Others
 Make sure current Linux kernel debug image is right
+Where is the current Linux kernel debug image
+Use /proc/kallsyms
+Use linux_banner
+Handle the issue that cannot find any file in "/sys/" or "/sys/kernel/debug/"
 Handle the issue that Linux kernel debug image's address info is not same with Linux kernel when it running
 Get KGTP
 Get KGTP through http
@@ -32,19 +40,28 @@ If GDB on remote machine
 Add module symbols to GDB
 How to use getmod.py
 How to use getmod
-Access memory directly
+Direct access the current value in normal mode
+The memory of Linux kernel
+the memory of the user space program
+the trace state variables
 GDB tracepoint
 set tracepoint
+Howto handle the function is there but set tracepoint on it got fail
 How to set tracepoint condition
+How to handle error "Unsupported operator (null) (52) in expression."
 actions [num]
+collect expr1, expr2, ...
+teval expr1, expr2, ...
+while-stepping n
 Start and stop the tracepoint
 Enable and disable the tracepoint
-Use "tfind" select the entry inside the trace frame info
+Use tfind select the entry inside the trace frame info
+How to handle error "No such file or directory."
+Save the trace frame info to a file
 Show and save the tracepoint
 Delete tracepoint
 Use tracepoint get register info from a point of kernel
 Use tracepoint get the value of variable from a point of kernel
-How to handle "Unsupported operator (null) (52) in expression."
 Show all the traced data of current frame
 Get status of tracepoint
 Set the trace buffer into a circular buffer
@@ -53,8 +70,11 @@ kprobes-optimization and the execution speed of tracepoint
 How to use trace state variables
 Simple trace state variables
 Per_cpu trace state variables
+How to define
+Example 1
+Example 2
 Special trace state variables $current_task, $current_task_pid, $current_thread_info, $cpu_id, $dump_stack, $printk_level, $printk_format, $printk_tmp ,$clock, $hardirq_count, $softirq_count and $irq_count
-Special trace state variable $no_self_trace
+Special trace state variable $self_trace
 Trace the function return with $kret
 Use $ignore_error and $last_errno to ignore the error of tstart
 Use $cooked_clock and $cooked_rdtsc the time without KGTP used
@@ -63,14 +83,15 @@ Howto backtrace (stack dump)
 Collect stack with $bt and use GDB command "backtrace"
 Collect stack of current function's caller with $_ret
 Use $dump_stack to output stack dump through printk
-How to use performance counters
-Define a perf event trace state variable
-Define a per_cpu perf event trace state variable
-The perf event type and config
-Enable and disable all the perf event in a CPU with $p_pe_en
-GDB scripts to help with set and get the perf event trace state variables
 Howto let tracepoint output value directly
 Switch collect to output the value directly
+Howto use watch tracepoint control hardware breakpoints to record memory access
+Trace state variables of watch tracepoint
+Static watch tracepoint
+Dynamic watch tracepoint
+Use while-stepping let Linux kernel do single step
+Howto use while-stepping
+Read the traceframe of while-stepping
 Howto show a variable whose value has been optimized away
 Update your GCC
 How to get the function pointer point to
@@ -90,11 +111,17 @@ How to add plugin in C
 API
 Example
 How to use
+How to use performance counters
+Define a perf event trace state variable
+Define a per_cpu perf event trace state variable
+The perf event type and config
+Enable and disable all the perf event in a CPU with $p_pe_en
+GDB scripts to help with set and get the perf event trace state variables
 What is KGTP
 KGTP is a flexible , lightweight and realtime Linux debugger and tracer.
 To use it, you don't need patch or rebuild the Linux kernel. Just build KGTP module and insmod it is OK.
 
-It makes Linux Kernel supply a GDB remote debug interface. Then GDB in current machine or remote machine can debug and trace Linux through GDB tracepoint and some other functions without stopping the Linux Kernel.
+It makes Linux Kernel supply a GDB remote debug interface. Then GDB in current machine or remote machine can debug and trace Linux kernel and user space program through GDB tracepoint and some other functions without stopping the Linux Kernel.
 And even if the board doesn't have GDB on it and doesn't have interface for remote debug. It can debug the Linux Kernel using offline debug (See HOWTO#/sys/kernel/debug/gtpframe_and_offline_debug).
 KGTP supports X86-32, X86-64, MIPS and ARM.
 KGTP is tested on Linux kernel 2.6.18 to upstream.
@@ -108,6 +135,24 @@ Get help or report issues about KGTP
 You can post it to http://code.google.com/p/kgtp/issues/list, write Email to kgtp@freelists.org or write Email to teawater@gmail.com .
 The KGTP team will try our best to help you.
 
+Table of different between GDB debug normal program and KGTP
+This table is for the people that have experience using GDB debug normal program. It will help you understand and remember the function of KGTP.
+
+Function	GDB debug normal program	GDB control KGTP debug Linux kernel
+Preparatory work	 Have a GDB installed in your system.
+Program built with "-g".	 KGTP need GDB 7.3 or newer version because it use some new functions of GDB. If your system doesn't supply it，you can get new version GDB built with "-static" that can running is most of Linux system in http://code.google.com/p/gdbt/ and you can get an introduce about howto built new GDB step by step in there.
+You alse need do some preparatory work with Linux kernel and KGTP. Please goto HOWTO#Preparatory_work_before_use_KGTP get howto do it.
+Attach	 Use command "gdb -p pid" or GDB command "attach pid" can attach a program that running in the system.	 Need insmod gtp.ko first, see #Exec_it.
+Then let GDB connect to KGTP, see #Make_GDB_connect_to_gtp.
+Please note that after GDB connect to KGTP, Linux kernel will not stop.
+Breakpoints	 GDB command "b place_will_stop", let program execute after this command. Then programe will stop in the place that setup a breakpoint.	 KGTP doesn't support breakpoints but it support tracepoints. Tracepoints can be considered as a special kind of breakpoints. It can be setup in some place of Linux kernel and define some commands that you want to do in its actions. When tracepoints start, they will execute these commands when Linux kernel execute to these place. When tracepoint stop, you can use some GDB commands parse the data that get by tracepoints like what you do when program stop by breakpoints. Difference is breakpoints will stop the program But the tracepoints of KGTP not. Please goto #GDB_tracepoint get howto use it.
+Memory read	 After GDB stop the program(maybe doesn't need), it can read memory of program with GDB command "print", "x" and so on.	 You can set special actions to collect memory to traceframe in tracepoints, and get the its value when tracepoint stop.#collect_expr1,_expr2,_... #Use_tfind_select_the_entry_inside_the_trace_frame_info 
+Or you can read memory directly when Linux kernel or program is running.#Direct_access_the_current_value_in_normal_mode
+Step and continue	 GDB can continue program execution with command "continue" and stop it with CTRL-C.	 KGTP never stop the Linux kernel. But tracepoint can be start and stop.#Start_and_stop_the_tracepoint 
+Or use while-stepping tracepoint record Linux kernel with some times single step and Let KGTP switch to replay mode. Then it support execution commands (continue, step) and reverse-execute commands (reverse-continue, reverse-step). #Use_while-stepping_let_Linux_kernel_do_single_step
+Backtrace	 GDB can print backtrace of all stack frames with command "backtrace".	 KGTP can do it too.#Howto_backtrace_(stack_dump)
+Watchpoint	 GDB can let programe stop when some memory access happen with watchpoint.	 KGTP can record the memory access with watch tracepoint. #Howto_use_watch_tracepoint_control_hardware_breakpoints_to_recor
+Call function	 GDB can call function of program with command "call function(xx,xx)".	 KGTP can call function of Linux kernel with plugin.#How_to_add_plugin_in_C
 Preparatory work before use KGTP
 Linux kernel
 If your system use the Linux kernel that is built by yourself
@@ -141,10 +186,11 @@ sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 428D7C01
 Then run:
 sudo apt-get update
 
-2) Get Linux kernel debug image.
+2) Get Linux kernel debug image
 
 sudo apt-get install linux-image-$(uname -r)-dbgsym
 Then you can find Linux kernel debug image in "/usr/lib/debug/boot/vmlinux-$(uname -r)".
+Please note that this step Get Linux kernel debug image need do again when Linux kernel update.
 
 Install the Linux kernel headers
 sudo apt-get install linux-headers-generic
@@ -156,6 +202,8 @@ sudo mkdir -p /build/buildd/
 sudo tar vxjf /usr/src/linux-source-$(uname -r | sed 's/-.*//').tar.bz2 -C /build/buildd/
 sudo rm -rf /build/buildd/linux-$(uname -r | sed 's/-.*//')
 sudo mv /build/buildd/linux-source-$(uname -r | sed 's/-.*//') /build/buildd/linux-$(uname -r | sed 's/-.*//')
+Please note that this step Install the Linux kernel source need do again when Linux kernel update.
+
 Fedora
 Install the Linux kernel debug image
 sudo yum --enablerepo=fedora-debuginfo install kernel-debuginfo
@@ -171,6 +219,11 @@ GDB open the right Linux kernel debug image is an very important because GDB wil
 There are 2 ways to do the check, what I suggest is do both of them to make sure Linux kernel debug image is right. 
 
 Please note that if you determine you use the right Linux kernel debug image, but cannot pass these ways. Please see HOWTO#Handle_the_issue_that_Linux_kernel_debug_image's_address_in.
+
+Where is the current Linux kernel debug image
+In UBUNTU, you can find it in "/usr/lib/debug/boot/vmlinux-$(uname -r)".
+In Fedora, you can find it in "/usr/lib/debug/lib/modules/$(uname -r)/vmlinux".
+If you build Linux kernel with yourself, you can find vmlinux file in the Linux kernel build directory.
 
 Use /proc/kallsyms
 In the system that its Linux kernel is what you want to trace, use following command to get the address of sys_read and sys_write:
@@ -202,6 +255,21 @@ Remote debugging using /sys/kernel/debug/gtp
 (gdb) p linux_banner
 $2 = "Linux version 3.4.0-rc4+ (teawater@teawater-Precision-M4600) (gcc version 4.6.3 (GCC) ) #3 SMP Tue Apr 24 13:29:05 CST 2012\n"
 This linux_banner is the kernel info that Linux kernel that KGTP is tracing. If it is same with the prev kernel info, the Linux kernel debug image is right.
+
+Handle the issue that cannot find any file in "/sys/" or "/sys/kernel/debug/"
+Because KGTP interface is "/sys/kernel/debug/gtp", it will cannot be used if cannot find any file in "/sys/" or "/sys/kernel/debug/".
+
+If you got this issue, please make sure "Debug Filesystem" is opened in your kernel config first. If_your_system_use_the_Linux_kernel_that_is_built_by_yourself?
+
+If it is opened, please use following command mount sysfs.
+
+sudo mount -t sysfs none /sys/
+Then you can find files in "/sys/". 
+
+please use following command mount debugfs.
+
+mount -t debugfs none /sys/kernel/debug/
+Then you can find files in "/sys/kernel/debug/".
 
 Handle the issue that Linux kernel debug image's address info is not same with Linux kernel when it running
 In X86_32, you will found that the Linux kernel debug image's address info is not same with Linux kernel when it running through the ways in HOWTO#Make_sure_current_Linux_kernel_debug_image_is_right. And you determine the Linux kernel debug image is right.
@@ -290,7 +358,8 @@ Then you can use DKMS commands to control KGTP. Please goto http://linux.dell.co
 Use KGTP patch for Linux kernel
 Most of time, you don't need KGTP patch because KGTP can build as a LKM and very easy to use. But to help some people include KGTP to them special Linux Kernel tree, KGTP supply patches for Linux kernel.
 In the KGTP directory:
-gtp_3.0_to_upstream.patch is the patch for Linux kernel from 3.0 to upstream.
+gtp_3.7_to_upstream.patch is the patch for Linux kernel from 3.7 to upstream.
+gtp_3.0_to_3.6.patch is the patch for Linux kernel from 3.0 to 3.6.
 gtp_2.6.39.patch is the patch for Linux kernel 2.6.39.
 gtp_2.6.33_to_2.6.38.patch is the patch for Linux kernel from 2.6.33 to 2.6.38.
 gtp_2.6.20_to_2.6.32.patch is the patch for Linux kernel from 2.6.20 to 2.6.32.
@@ -310,6 +379,8 @@ Or you can use the kgtp module in the directory.
 cd kgtp/
 sudo insmod gtp.ko
 Make GDB connect to gtp
+Please note that let GDB open a right vmlinux file is very important. Please goto #Make_sure_current_Linux_kernel_debug_image_is_right get how to do it.
+
 GDB on the current machine
 sudo gdb ./vmlinux
 (gdb) target remote /sys/kernel/debug/gtp
@@ -361,8 +432,11 @@ If you use remote debug or offline debug, maybe you need change the base directo
 
 #/lib/modules/2.6.39-rc5+/kernel is replaced to sudo ./getmod -r /home/teawater/kernel/b26
 sudo ./getmod -r /home/teawater/kernel/b26 >~/tmp/mi
-Access memory directly
-After connect the KGTP, you can access most of memory directly.
+Direct access the current value in normal mode
+After GDB connect to KGTP, if it doesn't select any a entry of trace frame bufffer with GDB command "tfind", GDB in the normal mode. Then you can direct access the current value of memory (Linux kernel or the user space program) and the trace state variables without stop anything.
+If you have selected a trace frame entry, use GDB command "tfind -1" to return to normal mode. Please goto #Use_tfind_select_the_entry_inside_the_trace_frame_info get more info about GDB command "tfind".
+
+The memory of Linux kernel
 For example, you can access to "jiffies_64" with following command:
 
 (gdb) p jiffies_64
@@ -376,6 +450,39 @@ If you want show more than one variables with one GDB command, please use follow
 
 (gdb) printf "%4d %4d %4d %4d %4d %4d %18d %lu\n", this_rq->cpu, this_rq->nr_running, this_rq->nr_uninterruptible, nr_active, calc_load_tasks->counter, this_rq->calc_load_active, delta, this_rq->calc_load_update
 2 1 0 0 0 0 673538312 717077240
+the memory of the user space program
+KGTP can read memory directly without stop this user space program. For example:
+
+#Connect to KGTP(it is different with the way that is introduced in before)
+(gdb) target extended-remote /sys/kernel/debug/gtp
+#Add a new inferior to parse info of the user space program.
+(gdb) add-inferior
+Added inferior 2
+#Switch to this inferior
+(gdb) inferior 2
+[Switching to inferior 2 [<null>] (<noexec>)]
+#Load the symbol of the program this you want to read
+(gdb) file ~/kernel/svn/bak/a.out
+Reading symbols from /home/teawater/kernel/svn/bak/a.out...done.
+#Attach to the program (it will not stop the program).
+(gdb) attach 10039
+Attaching to program: /home/teawater/kernel/svn/bak/a.out, Remote target
+Reading symbols from /lib/x86_64-linux-gnu/libc.so.6...(no debugging symbols found)...done.
+Loaded symbols for /lib/x86_64-linux-gnu/libc.so.6
+Reading symbols from /lib64/ld-linux-x86-64.so.2...(no debugging symbols found)...done.
+Loaded symbols for /lib64/ld-linux-x86-64.so.2
+0x0000000000000000 in ?? ()
+#Then you can read the value of this program.
+(gdb) p c
+$3 = -1222013392
+(gdb) p c
+$4 = -590910451
+In this example, I used some multiple Inferiors commands. Please goto http://sourceware.org/gdb/current/onlinedocs/gdb/Inferiors-and-Programs.html get more info about it.
+
+the trace state variables
+You can access value of TSV with the command that same with access memory.
+Please goto HOWTO#How_to_use_trace_state_variables get more info about TSV.
+
 GDB tracepoint
 Tracepoint is that GDB define some addresses and some actions and put them to the target (KGTP). After tracepoint start, , KGTP will do these actions (Some of them will collect data and save them to tracepoint frame buffer) when Linux kernel execution to there addresses. After that, Linux kernel will keep execution.
 KGTP supply some interfaces that GDB or other programe can take the data of tracepoint frame buffer out to parse.
@@ -419,6 +526,13 @@ Value of $bpnum is the last ID of GDB tracepoint. Then you can use GDB command "
 
 (gdb) trace handle_irq
 (gdb) condition $bpnum (irq == 47)
+How to handle error "Unsupported operator (null) (52) in expression."
+If you use condition about string, you will got this error when you call "tstart".
+To handle it, you can convent the char to int to handle this issue, for example:
+
+(gdb) p/x 'A'
+$4 = 0x41
+(gdb) condition 1 (buf[0] == 0x41)
 actions [num]
 This command will prompt for a list of actions to be taken when the tracepoint is hit. If the tracepoint number num is not specified, this command sets the actions for the one that was most recently defined (so that you can define a tracepoint and then say actions without bothering about its number). You specify the actions themselves on the following lines, one action at a time, and terminate the actions list with a line containing just end. So far, the only defined actions are collect, teval, and while-stepping.
 
@@ -434,7 +548,7 @@ teval expr1, expr2, ...
 Evaluate the given expressions when the tracepoint is hit. This command accepts a comma-separated list of expressions. The results are discarded, so this is mainly useful for assigning values to trace state variables (see HOWTO#Simple_trace_state_variables) without adding those values to the trace buffer, as would be the case if the collect action were used.
 
 while-stepping n
-Please goto HOWTO#If_the_debug_info_of_the_function_pointer_is_optimized_out see howto use it.
+Please goto #Use_while-stepping_let_Linux_kernel_do_single_step see howto use it.
 
 Start and stop the tracepoint
 Tracepoint will exec actions only when it is starting use this GDB command:
@@ -446,12 +560,43 @@ It will stop by this GDB command:
 Enable and disable the tracepoint
 Like breakpoint, tracepoint can be control by GDB commands "enable" and "disable". But please note that it only useful when tracepoint stop.
 
-Use "tfind" select the entry inside the trace frame info
+Use tfind select the entry inside the trace frame info
 GDB command "tfind" is used to select a entry of trace frame bufffer when tracepoint stop.
 When GDB inside "tfind" mode, it will just show the values of this entry that the tracepoint action collect. So it will output some error when print some values that action doesn't collect for example the argument of function. That is not a bug, please don't worry about it.
 Use "tfind" again will select next entry. "tfind id" will select entry id.
-To go back to normal mode, please use GDB command "tfind -1". Please goto http://sourceware.org/gdb/current/onlinedocs/gdb/tfind.html get more info about it.
+To return to normal mode(HOWTO#Direct_access_the_current_value_in_normal_mode), please use GDB command "tfind -1". Please goto http://sourceware.org/gdb/current/onlinedocs/gdb/tfind.html get more info about it.
 
+How to handle error "No such file or directory."
+When GDB cannot find the source code of Linux kernel, it will show this error message. For example:
+
+(gdb) tfind 
+Found trace frame 1, tracepoint 1
+#0  vfs_read (file=0xffff8801c36e6400, buf=0x7fff51a8f110 <Address 0x7fff51a8f110 out of bounds>, count=16, 
+    pos=0xffff8801761dff48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     /build/buildd/linux-3.2.0/fs/read_write.c: No such file or directory.
+You can use GDB command "set substitute-path" to handle it. The prev example, the Linux kernel source is in "/build/buildd/test/linux-3.2.0/". But vmlinux let GDB find Linux kernel source in "/build/buildd/linux-3.2.0/". You can handle it with:
+
+(gdb) set substitute-path /build/buildd/linux-3.2.0/ /build/buildd/test/linux-3.2.0/
+(gdb) tfind 
+Found trace frame 1, tracepoint 1
+#0  vfs_read (file=0xffff8801c36e6400, buf=0x7fff51a8f110 <Address 0x7fff51a8f110 out of bounds>, count=16, 
+    pos=0xffff8801761dff48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     {
+GDB have some other commands to handle the source code issue. Please goto http://sourceware.org/gdb/current/onlinedocs/gdb/Source-Path.html get the introduce about them.
+
+Save the trace frame info to a file
+/sys/kernel/debug/gtpframe supplies trace frame in tfile format (GDB can parse it) when KGTP is stop.
+Please note that some "cp" cannot handle it very well, please use "cat /sys/kernel/debug/gtpframe > ./gtpframe" to copy it.
+You can open file gtpframe when you want:
+
+(gdb) target tfile ./gtpframe
+Tracepoint 1 at 0xffffffff8114f3dc: file /home/teawater/kernel/linux-2.6/fs/readdir.c, line 24.
+Created tracepoint 1 for target's tracepoint 1 at 0xffffffff8114f3c0.
+(gdb) tfind 
+Found trace frame 0, tracepoint 1
+#0  vfs_readdir (file=0xffff880036e8f300, filler=0xffffffff8114f240 <filldir>, buf=0xffff880001e5bf38)
+    at /home/teawater/kernel/linux-2.6/fs/readdir.c:24
+24      {
 Show and save the tracepoint
 You can use GDB command "info tracepoints" to show all the tracepoints.
 You can use GDB command "save tracepoints filename" to save the commands that setup the tracepoints and actions into file filename. Then you use use GDB commands "source filename" to setup this tracepints again.
@@ -544,13 +689,6 @@ Found trace frame 0, tracepoint 1
 $1 = 4297248706
 (gdb) p file->f_path.dentry->d_iname
 $1 = "b26", '\000' <repeats 28 times>
-How to handle "Unsupported operator (null) (52) in expression."
-If you use condition about string, you will got this error when you call "tstart".
-To handle it, you can convent the char to int to handle this issue, for example:
-
-(gdb) p/x 'A'
-$4 = 0x41
-(gdb) condition 1 (buf[0] == 0x41)
 Show all the traced data of current frame
 After use "tfind" select an entry, you can use "tdump" to do it.
 
@@ -588,7 +726,8 @@ Please note that some KGTP functions will make this tracepoint use simple kprobe
 
 How to use trace state variables
 http://sourceware.org/gdb/current/onlinedocs/gdb/Trace-State-Variables.html
-Tracepoints have variables that can be traced directly, or used in tracepoint conditions.
+Trace state variable is referred to as the TSV.
+TSV can be accessed in tracepoint action and condition or direct access by GDB command.
 Please note that just GDB 7.2.1 and later versions support use trace state variables directly, the old version of GDB can show the value of trace state variables through command "info tvariables".
 
 Simple trace state variables
@@ -785,17 +924,15 @@ $c0             0           3255
 $c1             0           1904     
 sys_read() execute 3255 times in cpu0 and 1904 times in cpu1. Please note that this example just to howto use $cpu_id. Actially, this example use per_cpu trace state variables is better.
 
-Special trace state variable $no_self_trace
-$no_self_trace is different with the special trace state variables in the previous section. It is used to control the behavior of tracepoint.
-If the action of a tracepoint include a command access to the $no_self_trace. The tracepoint will not trace anything if the current_task is the a KGTP self process (GDB, netcat, getframe or some others process that access to the interface of KGTP).
-For example, if we want trace vfs_read or something that have process context, and we don't want trace the operation of KGTP self process. Add following command to the action:
+Special trace state variable $self_trace
+$self_trace is different with the special trace state variables in the previous section. It is used to control the behavior of tracepoint.
+In default, when tracepoint is triggered, the actions will not execute if the current_task is the a KGTP self process (GDB, netcat, getframe or some others process that access to the interface of KGTP).
+If you want tracepoint actions execute with any task, please include a command access to the $self_trace in the actions i.e. add following command to the actions:
 
->collect $no_self_trace
-Please note that the code that doesn't about process context (Irq handler, softirq) doesn't need set this variable.
-
+>teval $self_trace=0
 Trace the function return with $kret
 Sometime, set the tracepoint to the end of function is hard because the Kernel is compiled with optimization. At this time, you can get help from $kret.
-$kret is a special trace state variable like $no_self_trace. When you set value of it inside the action of tracepoint, this tracepoint be set with kretprobe instead of kprobe. Then it can trace the end of this function.
+$kret is a special trace state variable like $self_trace. When you set value of it inside the action of tracepoint, this tracepoint be set with kretprobe instead of kprobe. Then it can trace the end of this function.
 Please note that this tracepoint must set in the first address of the function in format "function_name".
 
 Following part is an example:
@@ -975,161 +1112,6 @@ Then your kernel will printk like:
 [22779.208137]  [<c05b97cf>] atomic_notifier_call_chain+0x1f/0x30
 [22779.208140]  [<c05b980d>] notify_die+0x2d/0x30
 [22779.208142]  [<c05b71c5>] do_int3+0x35/0xa0
-How to use performance counters
-Performance counters are special hardware registers available on most modern CPUs. These registers count the number of certain types of hw events: such as instructions executed, cachemisses suffered, or branches mis-predicted - without slowing down the kernel or applications. These registers can also trigger interrupts when a threshold number of events have passed - and can thus be used to profile the code that runs on that CPU.
-The Linux Performance Counter subsystem called perf event can get the value of performance counter. You can access it through KGTP perf event trace state variables.
-Please goto read the file tools/perf/design.txt in Linux Kernel to get more info about perf event.
-
-Define a perf event trace state variable
-Access an performance counter need define following trace state variable:
-
-"pe_cpu_"+tv_name       Define the the CPU id of the performance counter.
-"pe_type_"+tv_name      Define the the type of the performance counter.
-"pe_config_"+tv_name    Define the the config of the performance counter.
-"pe_en_"+tv_name        This the switch to enable or disable the performance counter.
-                        The performance counter is disable in default.
-"pe_val_"+tv_name       Access this variable can get the value of the performance counter.
-Define a per_cpu perf event trace state variable
-Define a per_cpu perf event trace state variable is same with define HOWTO#Per_cpu_trace_state_variables.
-
-"p_pe_"+perf_event type+string+CPU_id
-Please note that if you define a per_cpu perf event trace state variable, you will not need define the cpu id("pe_cpu") because KGTP already get it.
-
-The perf event type and config
-The type of perf event can be:
-
-0       PERF_TYPE_HARDWARE
-1       PERF_TYPE_SOFTWARE
-2       PERF_TYPE_TRACEPOINT
-3       PERF_TYPE_HW_CACHE
-4       PERF_TYPE_RAW
-5       PERF_TYPE_BREAKPOINT
-If the type is 0(PERF_TYPE_HARDWARE), the config can be:
-
-0       PERF_COUNT_HW_CPU_CYCLES
-1       PERF_COUNT_HW_INSTRUCTIONS
-2       PERF_COUNT_HW_CACHE_REFERENCES
-3       PERF_COUNT_HW_CACHE_MISSES
-4       PERF_COUNT_HW_BRANCH_INSTRUCTIONS
-5       PERF_COUNT_HW_BRANCH_MISSES
-6       PERF_COUNT_HW_BUS_CYCLES
-7       PERF_COUNT_HW_STALLED_CYCLES_FRONTEND
-8       PERF_COUNT_HW_STALLED_CYCLES_BACKEND
-
-If the type is 3(PERF_TYPE_HW_CACHE), the config need to divide to 3 parts: First one is cache id, it need be << 0 before set to config:
-
-0       PERF_COUNT_HW_CACHE_L1D
-1       PERF_COUNT_HW_CACHE_L1I
-2       PERF_COUNT_HW_CACHE_LL
-3       PERF_COUNT_HW_CACHE_DTLB
-4       PERF_COUNT_HW_CACHE_ITLB
-5       PERF_COUNT_HW_CACHE_BPU
-Second one is cache op id, it need be << 8 before set to config:
-
-0       PERF_COUNT_HW_CACHE_OP_READ
-1       PERF_COUNT_HW_CACHE_OP_WRITE
-2       PERF_COUNT_HW_CACHE_OP_PREFETCH
-Last one is cache op result id, it need be << 16 before set to config:
-
-0       PERF_COUNT_HW_CACHE_RESULT_ACCESS
-1       PERF_COUNT_HW_CACHE_RESULT_MISS
-If you want get the perf count of PERF_COUNT_HW_CACHE_L1I(1), PERF_COUNT_HW_CACHE_OP_WRITE(1) and PERF_COUNT_HW_CACHE_RESULT_MISS(1), you can use:
-
-(gdb) tvariable $pe_config_cache=1 | (1 << 8) | (1 << 16)
-tools/perf/design.txt in Linux Kernel have more info about type and config of perf event.
-
-Enable and disable all the perf event in a CPU with $p_pe_en
-I think the best way that count a part of code with performance counters is enable all the count in the begin of the code and disable all of them in the end. You can do it with "pe_en". But if you have a lot of perf event trace state variables. That will make the tracepoint action very big. $p_pe_en is for this issue. You can enable all the perf event trace state variables in current CPU with following action:
-
->teval $p_pe_en=1
-Disable them with set $p_pe_en to 0.
-
->teval $p_pe_en=0
-GDB scripts to help with set and get the perf event trace state variables
-Following is a GDB script define two commands dpe and spe to help define and show the perf event trace state variables.
-You can put it to the ~/.gdbinit or your tracepoint script. Then you can use this two commands in GDB directly.
-
-define dpe
-  if ($argc < 2)
-    printf "Usage: dpe pe_type pe_config [enable]\n"
-  end
-  if ($argc >= 2)
-    eval "tvariable $p_pe_val_%d%d_c",$arg0, $arg1
-    eval "tvariable $p_pe_en_%d%d_c",$arg0, $arg1
-    set $tmp=0
-    while $tmp<$cpu_number
-      eval "tvariable $p_pe_type_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg0
-      eval "tvariable $p_pe_config_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg1
-      eval "tvariable $p_pe_val_%d%d_c%d=0",$arg0, $arg1, $tmp
-      if ($argc >= 3)
-        eval "tvariable $p_pe_en_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg2
-      end
-      set $tmp=$tmp+1
-    end
-  end
-end
-
-document dpe
-Usage: dpe pe_type pe_config [enable]
-end
-
-define spe
-  if ($argc != 2 && $argc != 3)
-    printf "Usage: spe pe_type pe_config [cpu_id]\n"
-  end
-  if ($argc == 2)
-    set $tmp=0
-    while $tmp<$cpu_number
-      eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $tmp
-      set $tmp=$tmp+1
-    end
-  end
-  if ($argc == 3)
-    eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $arg2
-  end
-end
-
-document spe
-Usage: spe pe_type pe_config [cpu_id]
-end
-Following is an example to use it get the performance counters of function tcp_v4_rcv:
-
-#Connect to KGTP
-(gdb) target remote /sys/kernel/debug/gtp
-#Define 3 pe tvs for PERF_COUNT_HW_CPU_CYCLES, PERF_COUNT_HW_CACHE_MISSES and PERF_COUNT_HW_BRANCH_MISSES.
-(gdb) dpe 0 0
-(gdb) dpe 0 3
-(gdb) dpe 0 5
-#enable the performance counters of this CPU in the begin of this function.
-(gdb) trace tcp_v4_rcv
-(gdb) action
->teval $p_pe_en=1
->end
-#$kret make this hanler the end of function tcp_v4_rcv.
-(gdb) trace *(tcp_v4_rcv)
-(gdb) action
->teval $kret=0
-#disable all performance counters of this CPU
->teval $p_pe_en=0
-#Access the per cpu perf event tv will access to the current cpu pe tv.
->collect $p_pe_val_00_0
->collect $p_pe_val_03_0
->collect $p_pe_val_05_0
-#Set all the pe tv to 0
->teval $p_pe_val_00_0=0
->teval $p_pe_val_03_0=0
->teval $p_pe_val_05_0=0
->end
-tstart
-#Wait some time that current pc receive some tcp package.
-(gdb) tstop
-(gdb) tfind
-(gdb) spe 0 0 $cpu_id
-$p_pe_val_00_2=12676
-(gdb) spe 0 3 $cpu_id
-$p_pe_val_03_2=7
-(gdb) spe 0 5 $cpu_id
-$p_pe_val_05_2=97
 Howto let tracepoint output value directly
 In the previous parts, you may understand that to get a value from Linux kernel, you need to use a tracepoint "collect" action to save the value to the tracepoint frame and use the GDB command "tfind" to parse the value from the frame data.
 But we want get the value directly sometimes, so KGTP supports two ways to output values directly.
@@ -1183,6 +1165,145 @@ gtp 1:((struct task_struct *)$current_task)->pid=12085
 gtp 1:$printk_tmp=jiffies_64=4322021438
 gtp 1:file->f_path.dentry->d_iname=b26
 "gtp 1" means that it was output by tracepoint 1.
+
+Howto use watch tracepoint control hardware breakpoints to record memory access
+Watch tracepoint can control hardware breakpoints to record the memory access through set some special trace state variables in its action.
+Please note that watch tracepoint is just support by X86 and X86_64 now. And dynamic watch tracepoint just can work OK in Linux 2.6.27 and newer version because Linux 2.6.26 and older version have some IPI issues on smp support.
+
+Trace state variables of watch tracepoint
+Name	Written by normal tracepoint	Read by normal tracepoint	Written by static watch tracepoint	Read by static watch tracepoint	Written by dynamic watch tracepoint	Read by dynamic watch tracepoint
+$watch_static	 Not support	 Not support	 If "teval $watch_static=1", then this tracepoint is static watch tracepoint.	 Not support	 If "teval $watch_static=1", then this tracepoint is static watch tracepoint.	 Not support
+$watch_set_id	 When this tracepoint want to setup a dynamic watch tracepoint, set a id of a dynamic watch tracepoint to $watch_set_id to point out which dynamic watch tracepoint you wan to setup.	 Not support	 Not support	 Not support	 Not support	 Not support
+$watch_set_addr	 When this tracepoint want to setup a dynamic watch tracepoint, set the address of a dynamic watch tracepoint to $watch_set_addr to point out which dynamic watch tracepoint you wan to setup.	 Not support	 Not support	 Not support	 Not support	 Not support
+$watch_type	 When this tracepoint want to setup a dynamic watch tracepoint, set the watch type of this dynamic watch tracepoint to $watch_type.
+0 is exec. 1 is write. 2 is read or write.	 Get the value that this tracepoint set to $watch_type.	 Set the type of this watch tracepoint.	 Get the type of this watch tracepoint.	 Set the default type of this watch tracepoint.	 Get the type of this watch tracepoint when it really exec.
+$watch_size	 When this tracepoint want to setup a dynamic watch tracepoint, set the watch size of this dynamic watch tracepoint to $watch_size.
+The size should be 1, 2, 4, 8.	 Get the value that this tracepoint set to $watch_size.	 Set the size of this watch tracepoint.	 Get the size of this watch tracepoint.	 Set the default size of this watch tracepoint.	 Get the size of this watch tracepoint when it really exec.
+$watch_start	 Set the address to a dynamic watch tracepoint(set by $watch_set_addr or $watch_set_id) and let it try to start work.	 Get the result of this start. (It will fail becasue X86 just have 4 hardware breakpoints.)
+Get 0 if success. If < 0 is the error id.	 Not support	 Not support	 Not support	 Not support
+$watch_stop	 Set a address to $watch_stop will let a dynamic watch tracepoint that watch in this address stop.	 Get the result of this stop.	 Not support	 Not support	 Not support	 Not support
+$watch_trace_num	 Not support	 Not support	 Not support	 Not support	 Not support	 The tracepoint number that setup this dynamic watch tracepoint.
+$watch_trace_addr	 Not support	 Not support	 Not support	 Not support	 Not support	 The tracepoint address that setup this dynamic watch tracepoint.
+$watch_addr	 Not support	 Not support	 Not support	 The address that this watch tracepoint is watching.	 Not support	 The address that this watch tracepoint is watching.
+$watch_val	 Not support	 Not support	 Not support	 The value of the memory that this watch tracepoint is watching.	 Not support	 The value of the memory that this watch tracepoint is watching.
+$watch_count	 Not support	 Not support	 Not support	 Not support	 Not support	 A special count for this watch tracepoint session.
+Static watch tracepoint
+You can use static watch tracepoint when you want watch value of a global variable or some memory that you can get its address directly. Following example is watch jiffies_64's write:
+
+#Static watch tracepoint get watch address from tracepoint address.
+trace *&jiffies_64
+  actions
+    #Set this watch tracepoint to static
+    teval $watch_static=1
+    #Watch memory write
+    teval $watch_type=1
+    teval $watch_size=8
+    collect $watch_val
+    collect $bt
+  end
+Dynamic watch tracepoint
+If you want to watch value of a local variable or some memory that you just get get its address inside the function, you can use dynamic watch tracepoint. Following example is watch write of f->f_pos and f->f_op inside function get_empty_filp:
+
+trace *1
+  commands
+    teval $watch_static=0
+    teval $watch_type=1
+    teval $watch_size=8
+    collect $bt
+    collect $watch_addr
+    collect $watch_val
+  end
+Define a dynamic watch tracepoint. The address "1" of it is not the address of memory that it will watch. It just help tracepoint that setup this dynamic watch tracepoint can find it.
+
+list get_empty_filp
+trace 133
+  commands
+    teval $watch_set_addr=1
+    teval $watch_size=4
+    teval $watch_start=&(f->f_pos)
+    teval $watch_size=8
+    teval $watch_start=&(f->f_op)
+  end
+Define a normal tracepoint that start to watch f->f_pos and f->f_op inside function get_empty_filp.
+
+trace file_sb_list_del
+  commands
+    teval $watch_stop=&(file->f_pos)
+    teval $watch_stop=&(file->f_op)
+  end
+Define a normal tracepoint that stop the tracepoint that watch file->f_pos and file->f_op.
+
+Use while-stepping let Linux kernel do single step
+Please note that while-stepping is just support by X86 and X86_64 now.
+
+Howto use while-stepping
+while-stepping is a special tracepoint action that include some actions with it.
+When tracepoints that its actions include "while-stepping n" execute, it will do n times single steps and executes the actions of while-stepping. For example:
+
+trace vfs_read
+#Because single step will make system slow, so use passcount or condition to limit the execution times of tracepoint is better.
+passcount 1
+  commands
+    collect $bt
+    collect $step_count
+    #do 2000 times single steps.
+    while-stepping 2000
+      #Following part is actions of "while-stepping 2000".
+      #Because step maybe execute to other functions, so does not access local variables is better.
+      collect $bt
+      collect $step_count
+    end
+  end
+Please note that tracepoint will disable the interrupt of current CPU when it do single step. Access $step_count in actions will get the count of this step that begin with 1.
+
+Read the traceframe of while-stepping
+The data of different step that is recorded by while-stepping actions will be saved in different traceframe that you can use tfind (#Use_tfind_select_the_entry_inside_the_trace_frame_info) to select them.
+Or you can switch KGTP to replay mode to select all the traceframe of a while-stepping tracepoint with GDB execution and reverse-execution commands. For example:
+Use tfind select one the traceframe of a while-stepping tracepoint.
+
+(gdb) tfind 
+Found trace frame 0, tracepoint 1
+#0  vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     {
+Following commands will swith KGTP to replay mode.
+
+(gdb) monitor replay
+(gdb) tfind -1
+No longer looking at any trace frame
+#0  vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:365
+365     {
+Then you can use execution commands.
+
+(gdb) n
+368             if (!(file->f_mode & FMODE_READ))
+(gdb) p file->f_mode
+$5 = 3
+Set breakpoints (Just valid in replay mode, will not affect Linux kernel execution).
+
+(gdb) b 375
+Breakpoint 2 at 0xffffffff81179b75: file /build/buildd/linux-3.2.0/fs/read_write.c, line 375.
+(gdb) c
+Continuing.
+
+Breakpoint 2, vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:375
+375             ret = rw_verify_area(READ, file, pos, count);
+(gdb) s
+rw_verify_area (read_write=0, file=0xffff8801f7bd4c00, ppos=0xffff8801f4b45f48, count=16)
+    at /build/buildd/linux-3.2.0/fs/read_write.c:300
+300             inode = file->f_path.dentry->d_inode;
+Use reverse-execution commands.
+
+(gdb) rs
+
+Breakpoint 2, vfs_read (file=0xffff8801f7bd4c00, buf=0x7fff74e4edb0 <Address 0x7fff74e4edb0 out of bounds>, count=16, 
+    pos=0xffff8801f4b45f48) at /build/buildd/linux-3.2.0/fs/read_write.c:375
+375             ret = rw_verify_area(READ, file, pos, count);
+(gdb) rn
+372             if (unlikely(!access_ok(VERIFY_WRITE, buf, count)))
+GDB commands tstart, tfind or quit can auto close the replay mode.
 
 Howto show a variable whose value has been optimized away
 Sometimes, GDB will output some value like:
@@ -1267,13 +1388,13 @@ End with a line saying just "end".
 (gdb) quit
 Then you can find files gtpstart and gtpstop in current directory. Copy it to the machine that you want to debug.
 
-In the debugged machine after insmod the gtp.ko:
+In the debugged machine, copy the program "putgtprsp" and "gtp.ko" in the KGTP directory to this machine first. After insmod the gtp.ko:
 Start the tracepoint:
 
-cat gtpstart > /sys/kernel/debug/gtp
+./putgtprsp ./gtpstart
 Stop the tracepoint:
 
-cat gtpstop > /sys/kernel/debug/gtp
+./putgtprsp ./gtpstop
 You can let Linux Kernel show the value directly, please see HOWTO#Howto_let_tracepoint_output_value_directly.
 
 If you want to save the value to the trace frame and parse later, you can use file "/sys/kernel/debug/gtpframe" that has the trace frame. Copy it to the PC that has GDB. 
@@ -1287,6 +1408,8 @@ Found trace frame 0, tracepoint 1
 #0  vfs_readdir (file=0xffff880036e8f300, filler=0xffffffff8114f240 <filldir>, buf=0xffff880001e5bf38)
     at /home/teawater/kernel/linux-2.6/fs/readdir.c:24
 24      {
+Please note that if you want connect KGTP from GDB in remote machine after use offline debug, you need "rmmod gtp" and "insmod gtp.ko" before call "nc".
+
 How to use /sys/kernel/debug/gtpframe_pipe
 This interface supplies same format trace frame with "gtpframe". But it can work when KGTP is running. After data is read, it will auto deleted from trace frame like "trace_pipe" of ftrace.
 
@@ -1340,33 +1463,7 @@ Then KGTP will not ignore the task that read /sys/kernel/debug/gtpframe_pipe.
 
 Use KGTP with user space program
 Read memory of user space program directly
-KGTP can read memory directly without stop this user space program. For example:
-
-#Connect to KGTP(it is different with the way that is introduced in before)
-(gdb) target extended-remote /sys/kernel/debug/gtp
-#Add a new inferior to parse info of the user space program.
-(gdb) add-inferior
-Added inferior 2
-#Switch to this inferior
-(gdb) inferior 2
-[Switching to inferior 2 [<null>] (<noexec>)]
-#Load the symbol of the program this you want to read
-(gdb) file ~/kernel/svn/bak/a.out
-Reading symbols from /home/teawater/kernel/svn/bak/a.out...done.
-#Attach to the program (it will not stop the program).
-(gdb) attach 10039
-Attaching to program: /home/teawater/kernel/svn/bak/a.out, Remote target
-Reading symbols from /lib/x86_64-linux-gnu/libc.so.6...(no debugging symbols found)...done.
-Loaded symbols for /lib/x86_64-linux-gnu/libc.so.6
-Reading symbols from /lib64/ld-linux-x86-64.so.2...(no debugging symbols found)...done.
-Loaded symbols for /lib64/ld-linux-x86-64.so.2
-0x0000000000000000 in ?? ()
-#Then you can read the value of this program.
-(gdb) p c
-$3 = -1222013392
-(gdb) p c
-$4 = -590910451
-In this example, I used some multiple Inferiors commands. Please goto http://sourceware.org/gdb/current/onlinedocs/gdb/Inferiors-and-Programs.html get more info about it.
+KGTP can read memory directly without stop this user space program. Please goto HOWTO#the_memory_of_the_user_space_program get how to do it.
 
 collect stack (for backtrace) of user space program in tracepoint
 $current_task_user is a special trace state variable that it is value will be true when current task is in user mode.
@@ -1523,3 +1620,159 @@ Use GDB connect to KGTP and use it.
 Disconnect GDB. If option in HOWTO#Do_not_stop_tracepoint_when_the_GDB_disconnects set to on, set it to off.
 rmmod plugin_example.ko
 Please note that KGTP support add more than one plugin.
+
+How to use performance counters
+Performance counters are special hardware registers available on most modern CPUs. These registers count the number of certain types of hw events: such as instructions executed, cachemisses suffered, or branches mis-predicted - without slowing down the kernel or applications. These registers can also trigger interrupts when a threshold number of events have passed - and can thus be used to profile the code that runs on that CPU.
+The Linux Performance Counter subsystem called perf event can get the value of performance counter. You can access it through KGTP perf event trace state variables.
+Please goto read the file tools/perf/design.txt in Linux Kernel to get more info about perf event.
+
+Define a perf event trace state variable
+Access an performance counter need define following trace state variable:
+
+"pe_cpu_"+tv_name       Define the the CPU id of the performance counter.
+"pe_type_"+tv_name      Define the the type of the performance counter.
+"pe_config_"+tv_name    Define the the config of the performance counter.
+"pe_en_"+tv_name        This the switch to enable or disable the performance counter.
+                        The performance counter is disable in default.
+"pe_val_"+tv_name       Access this variable can get the value of the performance counter.
+Define a per_cpu perf event trace state variable
+Define a per_cpu perf event trace state variable is same with define HOWTO#Per_cpu_trace_state_variables.
+
+"p_pe_"+perf_event type+string+CPU_id
+Please note that if you define a per_cpu perf event trace state variable, you will not need define the cpu id("pe_cpu") because KGTP already get it.
+
+The perf event type and config
+The type of perf event can be:
+
+0       PERF_TYPE_HARDWARE
+1       PERF_TYPE_SOFTWARE
+2       PERF_TYPE_TRACEPOINT
+3       PERF_TYPE_HW_CACHE
+4       PERF_TYPE_RAW
+5       PERF_TYPE_BREAKPOINT
+If the type is 0(PERF_TYPE_HARDWARE), the config can be:
+
+0       PERF_COUNT_HW_CPU_CYCLES
+1       PERF_COUNT_HW_INSTRUCTIONS
+2       PERF_COUNT_HW_CACHE_REFERENCES
+3       PERF_COUNT_HW_CACHE_MISSES
+4       PERF_COUNT_HW_BRANCH_INSTRUCTIONS
+5       PERF_COUNT_HW_BRANCH_MISSES
+6       PERF_COUNT_HW_BUS_CYCLES
+7       PERF_COUNT_HW_STALLED_CYCLES_FRONTEND
+8       PERF_COUNT_HW_STALLED_CYCLES_BACKEND
+
+If the type is 3(PERF_TYPE_HW_CACHE), the config need to divide to 3 parts: First one is cache id, it need be << 0 before set to config:
+
+0       PERF_COUNT_HW_CACHE_L1D
+1       PERF_COUNT_HW_CACHE_L1I
+2       PERF_COUNT_HW_CACHE_LL
+3       PERF_COUNT_HW_CACHE_DTLB
+4       PERF_COUNT_HW_CACHE_ITLB
+5       PERF_COUNT_HW_CACHE_BPU
+Second one is cache op id, it need be << 8 before set to config:
+
+0       PERF_COUNT_HW_CACHE_OP_READ
+1       PERF_COUNT_HW_CACHE_OP_WRITE
+2       PERF_COUNT_HW_CACHE_OP_PREFETCH
+Last one is cache op result id, it need be << 16 before set to config:
+
+0       PERF_COUNT_HW_CACHE_RESULT_ACCESS
+1       PERF_COUNT_HW_CACHE_RESULT_MISS
+If you want get the perf count of PERF_COUNT_HW_CACHE_L1I(1), PERF_COUNT_HW_CACHE_OP_WRITE(1) and PERF_COUNT_HW_CACHE_RESULT_MISS(1), you can use:
+
+(gdb) tvariable $pe_config_cache=1 | (1 << 8) | (1 << 16)
+tools/perf/design.txt in Linux Kernel have more info about type and config of perf event.
+
+Enable and disable all the perf event in a CPU with $p_pe_en
+I think the best way that count a part of code with performance counters is enable all the count in the begin of the code and disable all of them in the end. You can do it with "pe_en". But if you have a lot of perf event trace state variables. That will make the tracepoint action very big. $p_pe_en is for this issue. You can enable all the perf event trace state variables in current CPU with following action:
+
+>teval $p_pe_en=1
+Disable them with set $p_pe_en to 0.
+
+>teval $p_pe_en=0
+GDB scripts to help with set and get the perf event trace state variables
+Following is a GDB script define two commands dpe and spe to help define and show the perf event trace state variables.
+You can put it to the ~/.gdbinit or your tracepoint script. Then you can use this two commands in GDB directly.
+
+define dpe
+  if ($argc < 2)
+    printf "Usage: dpe pe_type pe_config [enable]\n"
+  end
+  if ($argc >= 2)
+    eval "tvariable $p_pe_val_%d%d_c",$arg0, $arg1
+    eval "tvariable $p_pe_en_%d%d_c",$arg0, $arg1
+    set $tmp=0
+    while $tmp<$cpu_number
+      eval "tvariable $p_pe_type_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg0
+      eval "tvariable $p_pe_config_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg1
+      eval "tvariable $p_pe_val_%d%d_c%d=0",$arg0, $arg1, $tmp
+      if ($argc >= 3)
+        eval "tvariable $p_pe_en_%d%d_c%d=%d",$arg0, $arg1, $tmp, $arg2
+      end
+      set $tmp=$tmp+1
+    end
+  end
+end
+
+document dpe
+Usage: dpe pe_type pe_config [enable]
+end
+
+define spe
+  if ($argc != 2 && $argc != 3)
+    printf "Usage: spe pe_type pe_config [cpu_id]\n"
+  end
+  if ($argc == 2)
+    set $tmp=0
+    while $tmp<$cpu_number
+      eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $tmp
+      set $tmp=$tmp+1
+    end
+  end
+  if ($argc == 3)
+    eval "printf \"$p_pe_val_%%d%%d_c%%d=%%ld\\n\",$arg0, $arg1, $tmp, $p_pe_val_%d%d_c%d", $arg0, $arg1, $arg2
+  end
+end
+
+document spe
+Usage: spe pe_type pe_config [cpu_id]
+end
+Following is an example to use it get the performance counters of function tcp_v4_rcv:
+
+#Connect to KGTP
+(gdb) target remote /sys/kernel/debug/gtp
+#Define 3 pe tvs for PERF_COUNT_HW_CPU_CYCLES, PERF_COUNT_HW_CACHE_MISSES and PERF_COUNT_HW_BRANCH_MISSES.
+(gdb) dpe 0 0
+(gdb) dpe 0 3
+(gdb) dpe 0 5
+#enable the performance counters of this CPU in the begin of this function.
+(gdb) trace tcp_v4_rcv
+(gdb) action
+>teval $p_pe_en=1
+>end
+#$kret make this hanler the end of function tcp_v4_rcv.
+(gdb) trace *(tcp_v4_rcv)
+(gdb) action
+>teval $kret=0
+#disable all performance counters of this CPU
+>teval $p_pe_en=0
+#Access the per cpu perf event tv will access to the current cpu pe tv.
+>collect $p_pe_val_00_0
+>collect $p_pe_val_03_0
+>collect $p_pe_val_05_0
+#Set all the pe tv to 0
+>teval $p_pe_val_00_0=0
+>teval $p_pe_val_03_0=0
+>teval $p_pe_val_05_0=0
+>end
+tstart
+#Wait some time that current pc receive some tcp package.
+(gdb) tstop
+(gdb) tfind
+(gdb) spe 0 0 $cpu_id
+$p_pe_val_00_2=12676
+(gdb) spe 0 3 $cpu_id
+$p_pe_val_03_2=7
+(gdb) spe 0 5 $cpu_id
+$p_pe_val_05_2=97

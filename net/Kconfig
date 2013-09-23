@@ -49,6 +49,7 @@ source "net/packet/Kconfig"
 source "net/unix/Kconfig"
 source "net/xfrm/Kconfig"
 source "net/iucv/Kconfig"
+source "net/toa/Kconfig"
 
 config INET
 	bool "TCP/IP networking"
@@ -202,6 +203,12 @@ source "net/phonet/Kconfig"
 source "net/ieee802154/Kconfig"
 source "net/sched/Kconfig"
 source "net/dcb/Kconfig"
+source "net/openvswitch/Kconfig"
+
+config RPS
+	boolean
+	depends on SMP && SYSFS && USE_GENERIC_SMP_HELPERS
+	default y
 
 config NETPRIO_CGROUP
 	tristate "Network priority cgroup"

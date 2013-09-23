@@ -55,6 +55,14 @@ config FILE_LOCKING
           for filesystems like NFS and for the flock() system
           call. Disabling this option saves about 11k.
 
+config SUBTREE
+	bool "Enable subtree inode identifier"
+	default n
+	help
+	  This option enables subtree inode identifies. Subtree id
+	  may be used as auxiliary owner specifier in addition to
+	  standard uid/gid, such as directory quota.
+
 source "fs/notify/Kconfig"
 
 source "fs/quota/Kconfig"

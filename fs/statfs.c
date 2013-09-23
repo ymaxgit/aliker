@@ -7,6 +7,9 @@
 #include <linux/statfs.h>
 #include <linux/security.h>
 #include <linux/uaccess.h>
+#include <linux/quotaops.h>
+#include <linux/quota.h>
+#include <linux/pid_namespace.h>
 
 static int flags_by_mnt(int mnt_flags)
 {
@@ -62,13 +65,85 @@ int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
 	return retval;
 }
 
+static int do_check_quota_valid(struct super_block *sb)
+{
+	/* this is much simpler than generic_quotactl_valid() since we skip
+	 * security check intentionally and only check if Q_GETQUOTA is valid.
+	 */
+	if (!sb)
+		return -ENODEV;
+	if (!sb->s_qcop)
+		return -ENOSYS;
+	if (!sb->s_qcop->get_dqblk)
+		return -ENOSYS;
+	if (!sb_has_quota_active(sb, GRPQUOTA))
+		return -ESRCH;
+	return 0;
+}
+
+static int do_getquota(struct if_dqblk *idq, unsigned long id, struct path *path)
+{
+	struct super_block *sb = NULL;
+	int ret;
+	sb = path->dentry->d_sb;
+	ret = do_check_quota_valid(sb);
+	if (ret)
+		return ret;
+	ret = sb->s_qcop->get_dqblk(sb, GRPQUOTA, id, idq);
+
+	return ret;
+}
+
+static s64 get_dquota_id(void)
+{
+	struct nameidata nd;
+	struct inode *inode;
+	s64 ret = -1;
+	ret = path_lookup("/", LOOKUP_FOLLOW, &nd);
+	if (!ret) {
+		inode = nd.path.dentry->d_inode;
+		if (inode->i_sb->s_op->get_subtree)
+			ret = inode->i_sb->s_op->get_subtree(inode);
+		path_put(&nd.path);
+	}
+	return ret;
+}
+
+static void fixup_kstatfs(struct if_dqblk *idq, struct kstatfs *st)
+{
+	if (idq->dqb_bhardlimit) {
+		st->f_blocks = DIV_ROUND_UP(
+				idq->dqb_bhardlimit << QIF_DQBLKSIZE_BITS,
+				st->f_bsize);
+		st->f_bfree = st->f_bavail =
+			st->f_blocks - DIV_ROUND_UP(idq->dqb_curspace, st->f_bsize);
+	}
+	if (idq->dqb_ihardlimit) {
+		st->f_files = idq->dqb_curinodes;
+		st->f_ffree = idq->dqb_ihardlimit - idq->dqb_curinodes;
+	}
+	return;
+}
+
 int vfs_statfs(struct path *path, struct kstatfs *buf)
 {
-	int error;
+	int error, error1;
+	s64 subtree = 0;
 
 	error = statfs_by_dentry(path->dentry, buf);
-	if (!error)
+	if (!error) {
 		buf->f_flags = calculate_f_flags(path->mnt);
+#ifdef CONFIG_SUBTREE
+		subtree = get_dquota_id();
+		if (in_noninit_pid_ns(current->nsproxy->pid_ns) && subtree > 0) {
+			struct if_dqblk idq;
+			memset(&idq, 0, sizeof(idq));
+			error1 = do_getquota(&idq, (unsigned long)subtree, path);
+			if (!error1)
+				fixup_kstatfs(&idq, buf);
+		}
+#endif
+	}
 	return error;
 }
 EXPORT_SYMBOL(vfs_statfs);

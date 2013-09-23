@@ -131,5 +131,6 @@ ifeq ($(CONFIG_X86_64),y)
 	obj-$(CONFIG_AMD_IOMMU)		+= amd_iommu_init.o amd_iommu.o
 
 	obj-$(CONFIG_PCI_MMCONFIG)	+= mmconf-fam10h_64.o
+	obj-$(CONFIG_HOTFIXES)		+= hotfixes.o
 	obj-y				+= vsmp_64.o
 endif
