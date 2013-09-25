@@ -1353,6 +1353,7 @@ int ext4_get_blocks(handle_t *handle, struct inode *inode, struct ext4_map_block
 	clear_buffer_mapped(bh);
 	clear_buffer_unwritten(bh);
 
+	map->m_flags = 0;
 	ext_debug("ext4_get_blocks(): inode %lu, flag %d, max_blocks %u,"
 		  "logical block %lu\n", inode->i_ino, flags, map->m_len,
 		  (unsigned long)map->m_lblk);
@@ -3965,9 +3966,6 @@ static int ext4_get_block_dio_write_nolock(struct inode *inode, sector_t iblock,
 	ret = ext4_get_blocks(handle, inode, &map, bh_result, create);
 	if (ret > 0) {
 		bh_result->b_size = (ret << inode->i_blkbits);
-		bh_result->b_state = (bh_result->b_state & ~EXT4_MAP_FLAGS) |
-					map.m_flags;
-		bh_result->b_size = inode->i_sb->s_blocksize * map.m_len;
 		ret = 0;
 	}
 
