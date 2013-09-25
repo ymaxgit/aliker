@@ -4473,7 +4473,7 @@ void ext4_ext_truncate(struct inode *inode)
 	 * finish any pending end_io work so we won't run the risk of
 	 * converting any truncated blocks to initialized later
 	 */
-	ext4_flush_completed_IO(inode);
+	ext4_flush_unwritten_io(inode);
 
 	/*
 	 * probably first extent we're gonna free will be last in block
@@ -4629,7 +4629,7 @@ long ext4_fallocate(struct inode *inode, int mode, loff_t offset, loff_t len)
 	}
 
 	/* Prevent race condition between unwritten */
-	ext4_flush_completed_IO(inode);
+	ext4_flush_unwritten_io(inode);
 	if (mode & FALLOC_FL_EXPOSE_STALE_DATA)
 		flags = EXT4_GET_BLOCKS_CREATE;
 	else
@@ -4917,7 +4917,7 @@ int ext4_ext_punch_hole(struct inode *inode, loff_t offset, loff_t length)
 	}
 
 	/* finish any pending end_io work */
-	err = ext4_flush_completed_IO(inode);
+	err = ext4_flush_unwritten_io(inode);
 	if (err)
 		return err;
 

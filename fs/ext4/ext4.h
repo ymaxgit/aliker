@@ -1759,7 +1759,7 @@ extern void ext4_add_groupblocks(handle_t *handle, struct super_block *sb,
 extern int ext4_trim_fs(struct super_block *, struct fstrim_range *);
 
 /* inode.c */
-int ext4_flush_completed_IO(struct inode *inode);
+int ext4_flush_unwritten_io(struct inode *inode);
 int ext4_forget(handle_t *handle, int is_metadata, struct inode *inode,
 		struct buffer_head *bh, ext4_fsblk_t blocknr);
 struct buffer_head *ext4_getblk(handle_t *, struct inode *,
@@ -2126,6 +2126,7 @@ extern const struct file_operations ext4_dir_operations;
 extern const struct inode_operations ext4_file_inode_operations;
 extern const struct file_operations ext4_file_operations;
 extern loff_t ext4_llseek(struct file *file, loff_t offset, int origin);
+extern void ext4_aiodio_wait(struct inode *inode);
 
 /* namei.c */
 extern const struct inode_operations ext4_dir_inode_operations;

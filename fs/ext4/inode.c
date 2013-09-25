@@ -3825,7 +3825,7 @@ retry:
 	if (rw == READ && ext4_should_dioread_nolock(inode)) {
 		if (unlikely(!list_empty(&ei->i_aio_dio_complete_list))) {
 			mutex_lock(&inode->i_mutex);
-			ext4_flush_completed_IO(inode);
+			ext4_flush_unwritten_io(inode);
 			mutex_unlock(&inode->i_mutex);
 		}
 
@@ -4090,8 +4090,6 @@ static int ext4_do_flush_completed_IO(struct inode *inode,
 
 		list_add_tail(&io->list, &complete);
 	}
-	/* It is important to update all flags for all end_io in one show w/o
-	 * dropping the lock. */
 	spin_lock_irqsave(&ei->i_completed_io_lock, flags);
 	while (!list_empty(&complete)) {
 		io = list_entry(complete.next, ext4_io_end_t, list);
@@ -4129,9 +4127,13 @@ static void ext4_end_aio_dio_work(struct work_struct *work)
 	ext4_do_flush_completed_IO(io->inode, io);
 }
 
-int ext4_flush_completed_IO(struct inode *inode)
+int ext4_flush_unwritten_io(struct inode *inode)
 {
-	return ext4_do_flush_completed_IO(inode, NULL);
+	int ret;
+
+	ret = ext4_do_flush_completed_IO(inode, NULL);
+	ext4_aiodio_wait(inode);
+	return ret;
 }
 
 static ext4_io_end_t *ext4_init_io_end (struct inode *inode, gfp_t flags)
