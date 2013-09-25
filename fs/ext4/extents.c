@@ -3832,8 +3832,8 @@ ext4_ext_handle_uninitialized_extents(handle_t *handle, struct inode *inode,
 		 * that this IO needs to convertion to written when IO is
 		 * completed
 		 */
-		if (io && (io->flag != DIO_AIO_UNWRITTEN)) {
-			io->flag = DIO_AIO_UNWRITTEN;
+		if (io && !(io->flag & DIO_AIO_UNWRITTEN)) {
+			io->flag |= DIO_AIO_UNWRITTEN;
 			atomic_inc(&EXT4_I(inode)->i_aiodio_unwritten);
 		} else
 			ext4_set_inode_state(inode, EXT4_STATE_DIO_UNWRITTEN);
@@ -4325,8 +4325,8 @@ got_allocated_blocks:
 		err = ext4_ext_insert_extent(handle, inode, path,
 					     &newex, flags);
 	if (!err && set_unwritten) {
-		if (io && (io->flag != DIO_AIO_UNWRITTEN)) {
-			io->flag = DIO_AIO_UNWRITTEN;
+		if (io && !(io->flag & DIO_AIO_UNWRITTEN)) {
+			io->flag |= DIO_AIO_UNWRITTEN;
 			atomic_inc(&EXT4_I(inode)->i_aiodio_unwritten);
 		} else
 			ext4_set_inode_state(inode,
@@ -4473,7 +4473,7 @@ void ext4_ext_truncate(struct inode *inode)
 	 * finish any pending end_io work so we won't run the risk of
 	 * converting any truncated blocks to initialized later
 	 */
-	flush_aio_dio_completed_IO(inode);
+	ext4_flush_completed_IO(inode);
 
 	/*
 	 * probably first extent we're gonna free will be last in block
@@ -4629,7 +4629,7 @@ long ext4_fallocate(struct inode *inode, int mode, loff_t offset, loff_t len)
 	}
 
 	/* Prevent race condition between unwritten */
-	flush_aio_dio_completed_IO(inode);
+	ext4_flush_completed_IO(inode);
 	if (mode & FALLOC_FL_EXPOSE_STALE_DATA)
 		flags = EXT4_GET_BLOCKS_CREATE;
 	else
@@ -4917,7 +4917,7 @@ int ext4_ext_punch_hole(struct inode *inode, loff_t offset, loff_t length)
 	}
 
 	/* finish any pending end_io work */
-	err = flush_aio_dio_completed_IO(inode);
+	err = ext4_flush_completed_IO(inode);
 	if (err)
 		return err;
 
