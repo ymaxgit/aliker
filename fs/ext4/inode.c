@@ -4289,6 +4289,7 @@ static ssize_t ext4_ext_direct_IO(int rw, struct kiocb *iocb,
 		overwrite = *private_ptr;
 
 		if (overwrite) {
+			down_read_non_owner(&inode->i_alloc_sem);
 			down_read(&EXT4_I(inode)->i_data_sem);
 			mutex_unlock(&inode->i_mutex);
 		}
@@ -4381,6 +4382,7 @@ static ssize_t ext4_ext_direct_IO(int rw, struct kiocb *iocb,
 	retake_lock:
 		/* take the i_mutex locking again if we do a over write dio */
 		if (overwrite) {
+			up_read_non_owner(&inode->i_alloc_sem);
 			up_read(&EXT4_I(inode)->i_data_sem);
 			mutex_lock(&inode->i_mutex);
 		}
