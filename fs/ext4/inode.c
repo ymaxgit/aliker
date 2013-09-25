@@ -229,6 +229,8 @@ void ext4_delete_inode(struct inode *inode)
 	handle_t *handle;
 	int err;
 
+	ext4_ioend_wait(inode);
+
 	if (ext4_should_order_data(inode))
 		ext4_begin_ordered_truncate(inode, 0);
 	truncate_inode_pages(&inode->i_data, 0);
