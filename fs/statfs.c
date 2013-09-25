@@ -65,6 +65,7 @@ int statfs_by_dentry(struct dentry *dentry, struct kstatfs *buf)
 	return retval;
 }
 
+#ifdef CONFIG_SUBTREE
 static int do_check_quota_valid(struct super_block *sb)
 {
 	/* this is much simpler than generic_quotactl_valid() since we skip
@@ -124,11 +125,15 @@ static void fixup_kstatfs(struct if_dqblk *idq, struct kstatfs *st)
 	}
 	return;
 }
+#endif
 
 int vfs_statfs(struct path *path, struct kstatfs *buf)
 {
-	int error, error1;
+	int error;
+#ifdef CONFIG_SUBTREE
+	int error1;
 	s64 subtree = 0;
+#endif
 
 	error = statfs_by_dentry(path->dentry, buf);
 	if (!error) {

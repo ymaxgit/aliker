@@ -19,8 +19,11 @@ static inline void ext3_set_subtree(struct inode *inode, u32 id)
 	EXT3_I(inode)->i_subtree = id;
 }
 #else /* !CONFIG_EXT3_FS_SUBTREE */
-#define ext3_get_subtree(inode) do {} while (0)
 #define ext3_set_subtree(inode, id) do {} while (0)
+static inline int ext3_get_subtree(struct inode *inode)
+{
+	return 0;
+}
 static inline int ext3_subtree_xattr_read(struct inode *inode, unsigned int *id)
 {
 	return -ENOTSUPP;
