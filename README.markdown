@@ -22,3 +22,7 @@ Features
 * Perf jit to enable you use perf to trace a java program.
 * Enable different memory management policy.
 * ...
+
+RPMS
+========
+If you want to build an kernel rpm for your server, please refer to https://github.com/alibaba/ali_kernel_rpm.
