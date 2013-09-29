@@ -3825,13 +3825,15 @@ ext4_ext_handle_uninitialized_extents(handle_t *handle, struct inode *inode,
 		ret = ext4_split_unwritten_extents(handle,
 						inode, path, map->m_lblk,
 						map->m_len, flags);
+		if (ret <= 0)
+			goto out;
 		/*
 		 * Flag the inode(non aio case) or end_io struct (aio case)
 		 * that this IO needs to convertion to written when IO is
 		 * completed
 		 */
-		if (io && (io->flag != DIO_AIO_UNWRITTEN)) {
-			io->flag = DIO_AIO_UNWRITTEN;
+		if (io && !(io->flag & DIO_AIO_UNWRITTEN)) {
+			io->flag |= DIO_AIO_UNWRITTEN;
 			atomic_inc(&EXT4_I(inode)->i_aiodio_unwritten);
 		} else
 			ext4_set_inode_state(inode, EXT4_STATE_DIO_UNWRITTEN);
@@ -4083,6 +4085,7 @@ int ext4_ext_get_blocks(handle_t *handle, struct inode *inode,
 	struct ext4_allocation_request ar;
 	ext4_io_end_t *io = EXT4_I(inode)->cur_aio_dio;
 	ext4_lblk_t cluster_offset;
+	int set_unwritten = 0;
 
 	__clear_bit(BH_New, &bh_result->b_state);
 	ext_debug("blocks %u/%u requested for inode %lu\n",
@@ -4309,14 +4312,8 @@ got_allocated_blocks:
 		 * For non asycn direct IO case, flag the inode state
 		 * that we need to perform convertion when IO is done.
 		 */
-		if ((flags & EXT4_GET_BLOCKS_DIO)) {
-			if (io && (io->flag != DIO_AIO_UNWRITTEN)) {
-				io->flag = DIO_AIO_UNWRITTEN;
-				atomic_inc(&EXT4_I(inode)->i_aiodio_unwritten);
-			} else
-				ext4_set_inode_state(inode,
-						     EXT4_STATE_DIO_UNWRITTEN);
-		}
+		if ((flags & EXT4_GET_BLOCKS_DIO))
+			set_unwritten = 1;
 		if (ext4_should_dioread_nolock(inode)) {
 			set_buffer_uninit(bh_result);
 			map->m_flags |= EXT4_MAP_UNINIT;
@@ -4327,6 +4324,14 @@ got_allocated_blocks:
 	if (!err)
 		err = ext4_ext_insert_extent(handle, inode, path,
 					     &newex, flags);
+	if (!err && set_unwritten) {
+		if (io && !(io->flag & DIO_AIO_UNWRITTEN)) {
+			io->flag |= DIO_AIO_UNWRITTEN;
+			atomic_inc(&EXT4_I(inode)->i_aiodio_unwritten);
+		} else
+			ext4_set_inode_state(inode,
+					     EXT4_STATE_DIO_UNWRITTEN);
+	}
 	if (err && free_on_err) {
 		int fb_flags = flags & EXT4_GET_BLOCKS_DELALLOC_RESERVE ?
 			EXT4_FREE_BLOCKS_NO_QUOT_UPDATE : 0;
@@ -4468,7 +4473,7 @@ void ext4_ext_truncate(struct inode *inode)
 	 * finish any pending end_io work so we won't run the risk of
 	 * converting any truncated blocks to initialized later
 	 */
-	flush_aio_dio_completed_IO(inode);
+	ext4_flush_unwritten_io(inode);
 
 	/*
 	 * probably first extent we're gonna free will be last in block
@@ -4624,7 +4629,7 @@ long ext4_fallocate(struct inode *inode, int mode, loff_t offset, loff_t len)
 	}
 
 	/* Prevent race condition between unwritten */
-	flush_aio_dio_completed_IO(inode);
+	ext4_flush_unwritten_io(inode);
 	if (mode & FALLOC_FL_EXPOSE_STALE_DATA)
 		flags = EXT4_GET_BLOCKS_CREATE;
 	else
@@ -4912,7 +4917,7 @@ int ext4_ext_punch_hole(struct inode *inode, loff_t offset, loff_t length)
 	}
 
 	/* finish any pending end_io work */
-	err = flush_aio_dio_completed_IO(inode);
+	err = ext4_flush_unwritten_io(inode);
 	if (err)
 		return err;
 
