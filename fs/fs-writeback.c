@@ -591,6 +591,7 @@ static inline bool over_bground_thresh(void)
 static long wb_writeback(struct bdi_writeback *wb,
 			 struct wb_writeback_work *work)
 {
+	unsigned long wb_start = jiffies;
 	struct writeback_control wbc = {
 		.sync_mode		= work->sync_mode,
 		.older_than_this	= NULL,
@@ -637,6 +638,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		else
 			writeback_inodes_wb(wb, &wbc);
 		trace_wbc_writeback_written(&wbc, wb->bdi);
+		bdi_update_bandwidth(wb->bdi, wb_start);
 		work->nr_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
 		wrote += MAX_WRITEBACK_PAGES - wbc.nr_to_write;
 
