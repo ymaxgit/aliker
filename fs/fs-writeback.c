@@ -638,7 +638,7 @@ static long wb_writeback(struct bdi_writeback *wb,
 		else
 			writeback_inodes_wb(wb, &wbc);
 		trace_wbc_writeback_written(&wbc, wb->bdi);
-		bdi_update_bandwidth(wb->bdi, 0, 0, 0, 0, wb_start);
+		bdi_update_bandwidth(wb->bdi, 0, 0, 0, 0, 0, wb_start);
 		work->nr_pages -= MAX_WRITEBACK_PAGES - wbc.nr_to_write;
 		wrote += MAX_WRITEBACK_PAGES - wbc.nr_to_write;
 
