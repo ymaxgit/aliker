@@ -50,6 +50,7 @@
 #include <linux/perf_event.h>
 #include <trace/events/sched.h>
 #include <linux/oom.h>
+#include <linux/writeback.h>
 
 #include <asm/uaccess.h>
 #include <asm/unistd.h>
@@ -1040,6 +1041,11 @@ NORET_TYPE void do_exit(long code)
 	validate_creds_for_do_exit(tsk);
 
 	preempt_disable();
+	if (tsk->nr_dirtied) {
+		int *p;
+		p = &__get_cpu_var(dirty_throttle_leaks);
+		*p += tsk->nr_dirtied;
+	}
 	exit_rcu();
 	wait_for_rqlock();
 	/* causes final put_task_struct in finish_task_switch(). */
