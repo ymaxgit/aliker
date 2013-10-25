@@ -1087,6 +1087,8 @@ static void blkcg_update_dirty_ratelimit(struct blkio_cgroup *blkcg,
 	ratelimit >>= PAGE_SHIFT;
 
 	blkcg->dirty_ratelimit = (blkcg->dirty_ratelimit + ratelimit) / 2 + 1;
+	trace_blkcg_dirty_ratelimit(bps, dirty_rate,
+				    blkcg->dirty_ratelimit, ratelimit);
 }
 
 void blkcg_update_bandwidth(struct blkio_cgroup *blkcg)
