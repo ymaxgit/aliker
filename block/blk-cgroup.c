@@ -16,7 +16,7 @@
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/blkdev.h>
-#include "blk-cgroup.h"
+#include <linux/blk-cgroup.h>
 #include <linux/genhd.h>
 
 #define MAX_KEY_LEN 100

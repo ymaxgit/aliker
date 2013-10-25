@@ -29,12 +29,12 @@
 #include <linux/fault-inject.h>
 #include <linux/delay.h>
 #include <linux/ratelimit.h>
+#include <linux/blk-cgroup.h>
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/block.h>
 
 #include "blk.h"
-#include "blk-cgroup.h"
 
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_remap);
 EXPORT_TRACEPOINT_SYMBOL_GPL(block_rq_remap);

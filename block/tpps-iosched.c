@@ -12,7 +12,7 @@
 #include <linux/rbtree.h>
 #include <linux/ioprio.h>
 #include <linux/blktrace_api.h>
-#include "blk-cgroup.h"
+#include <linux/blk-cgroup.h>
 #include "blk.h"
 
 static struct kmem_cache *tpps_pool;
