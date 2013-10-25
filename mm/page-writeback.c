@@ -1011,6 +1011,7 @@ static void balance_dirty_pages(struct address_space *mapping,
 	unsigned long background_thresh;
 	unsigned long dirty_thresh;
 	unsigned long bdi_thresh;
+	long period;
 	long pause = 0;
 	long uninitialized_var(max_pause);
 	bool dirty_exceeded = false;
@@ -1021,6 +1022,8 @@ static void balance_dirty_pages(struct address_space *mapping,
 	unsigned long start_time = jiffies;
 
 	for (;;) {
+		unsigned long now = jiffies;
+
 		/*
 		 * Unstable writes are a feature of certain networked
 		 * filesystems (i.e. NFS) in which data may have been
@@ -1040,8 +1043,11 @@ static void balance_dirty_pages(struct address_space *mapping,
 		 */
 		freerun = dirty_freerun_ceiling(dirty_thresh,
 						background_thresh);
-		if (nr_dirty <= freerun)
+		if (nr_dirty <= freerun) {
+			current->dirty_paused_when = now;
+			current->nr_dirtied = 0;
 			break;
+		}
 
 		if (unlikely(!writeback_in_progress(bdi)))
 			bdi_start_background_writeback(bdi);
@@ -1097,13 +1103,24 @@ static void balance_dirty_pages(struct address_space *mapping,
 		pos_ratio = bdi_position_ratio(bdi, dirty_thresh,
 					       background_thresh, nr_dirty,
 					       bdi_thresh, bdi_dirty);
-		if (unlikely(pos_ratio == 0)) {
+		task_ratelimit = (u64)dirty_ratelimit *
+					pos_ratio >> RATELIMIT_CALC_SHIFT;
+		if (unlikely(task_ratelimit == 0)) {
+			period = max_pause;
 			pause = max_pause;
 			goto pause;
 		}
-		task_ratelimit = (u64)dirty_ratelimit *
-					pos_ratio >> RATELIMIT_CALC_SHIFT;
-		pause = (HZ * pages_dirtied) / (task_ratelimit | 1);
+		period = HZ * pages_dirtied / task_ratelimit;
+		pause = period;
+		if (current->dirty_paused_when)
+			pause -= now - current->dirty_paused_when;
+		/*
+		 * For less than 1s think time (ext3/4 may block the dirtier
+		 * for up to 800ms from time to time on 1-HDD; so does xfs,
+		 * however at much less frequency), try to compensate it in
+		 * future periods by updating the virtual time; otherwise just
+		 * do a reset, as it may be a light dirtier.
+		 */
 		if (unlikely(pause <= 0)) {
 			trace_balance_dirty_pages(bdi,
 						  dirty_thresh,
@@ -1114,8 +1131,16 @@ static void balance_dirty_pages(struct address_space *mapping,
 						  dirty_ratelimit,
 						  task_ratelimit,
 						  pages_dirtied,
+						  period,
 						  pause,
 						  start_time);
+			if (pause < -HZ) {
+				current->dirty_paused_when = now;
+				current->nr_dirtied = 0;
+			} else if (period) {
+				current->dirty_paused_when += period;
+				current->nr_dirtied = 0;
+			}
 			pause = 1; /* avoid resetting nr_dirtied_pause below */
 			break;
 		}
@@ -1131,10 +1156,15 @@ pause:
 					  dirty_ratelimit,
 					  task_ratelimit,
 					  pages_dirtied,
+					  period,
 					  pause,
 					  start_time);
 		__set_current_state(TASK_KILLABLE);
 		io_schedule_timeout(pause);
+
+		current->dirty_paused_when = now + pause;
+		current->nr_dirtied = 0;
+
 		/*
                  * This is typically equal to (nr_dirty < dirty_thresh) and can
                  * also keep "1000+ dd on a slow USB stick" under control.
@@ -1163,11 +1193,10 @@ pause:
 	if (!dirty_exceeded && bdi->dirty_exceeded)
 		bdi->dirty_exceeded = 0;
 
-	current->nr_dirtied = 0;
 	if (pause == 0) { /* in freerun area */
 		current->nr_dirtied_pause =
 				dirty_poll_interval(nr_dirty, dirty_thresh);
-	} else if (pause <= max_pause / 4 &&
+	} else if (period <= max_pause / 4 &&
 		   pages_dirtied >= current->nr_dirtied_pause) {
 		current->nr_dirtied_pause = clamp_val(
 					dirty_ratelimit * (max_pause / 2) / HZ,
