@@ -1251,8 +1251,6 @@ void balance_dirty_pages_ratelimited_nr(struct address_space *mapping,
 	if (bdi->dirty_exceeded)
 		ratelimit = min(ratelimit, 32 >> (PAGE_SHIFT - 10));
 
-	current->nr_dirtied += nr_pages_dirtied;
-
 	preempt_disable();
 	/*
 	 * This prevents one CPU to accumulate too many dirtied pages without
@@ -1263,12 +1261,9 @@ void balance_dirty_pages_ratelimited_nr(struct address_space *mapping,
 	p =  &__get_cpu_var(bdp_ratelimits);
 	if (unlikely(current->nr_dirtied >= ratelimit))
 		*p = 0;
-	else {
-		*p += nr_pages_dirtied;
-		if (unlikely(*p >= ratelimit_pages)) {
-			*p = 0;
-			ratelimit = 0;
-		}
+	else if (unlikely(*p >= ratelimit_pages)) {
+		*p = 0;
+		ratelimit = 0;
 	}
 	/*
 	 * Pick up the dirtied pages by the exited tasks. This avoids lots of
@@ -1733,11 +1728,16 @@ int __set_page_dirty_no_writeback(struct page *page)
 void account_page_dirtied(struct page *page, struct address_space *mapping)
 {
 	if (mapping_cap_account_dirty(mapping)) {
+		int *p;
+
 		__inc_zone_page_state(page, NR_FILE_DIRTY);
 		__inc_bdi_stat(mapping->backing_dev_info, BDI_RECLAIMABLE);
 		__inc_bdi_stat(mapping->backing_dev_info, BDI_DIRTIED);
 		task_dirty_inc(current);
 		task_io_account_write(PAGE_CACHE_SIZE);
+		current->nr_dirtied++;
+		p = &__get_cpu_var(bdp_ratelimits);
+		*p += 1;
 	}
 }
 
