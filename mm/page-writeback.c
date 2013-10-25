@@ -1140,9 +1140,9 @@ static void balance_dirty_pages(struct address_space *mapping,
 	unsigned long bdi_thresh;
 	long period;
 	long pause;
-	long max_pause;
-	long min_pause;
-	int nr_dirtied_pause;
+	long max_pause = MAX_PAUSE;
+	long min_pause = 0;
+	int nr_dirtied_pause = 0;
 	bool dirty_exceeded = false;
 	unsigned long task_ratelimit;
 	unsigned long dirty_ratelimit;
@@ -1180,10 +1180,8 @@ static void balance_dirty_pages(struct address_space *mapping,
 						background_thresh);
 		if (nr_dirty <= freerun) {
 #ifdef CONFIG_BLK_DEV_THROTTLING
-			if (blkcg) {
-				max_pause = bdi_max_pause(bdi, 0);
+			if (blkcg)
 				goto cgroup_ioc;
-			}
 #endif
 			current->dirty_paused_when = now;
 			current->nr_dirtied = 0;
@@ -1246,14 +1244,6 @@ static void balance_dirty_pages(struct address_space *mapping,
 					       bdi_thresh, bdi_dirty);
 		task_ratelimit = (u64)dirty_ratelimit *
 					pos_ratio >> RATELIMIT_CALC_SHIFT;
-#ifdef CONFIG_BLK_DEV_THROTTLING
-		if (blkcg && task_ratelimit > blkcg->dirty_ratelimit) {
-cgroup_ioc:
-			blkcg_update_bandwidth(blkcg);
-			task_ratelimit = blkcg->dirty_ratelimit;
-			dirty_ratelimit = task_ratelimit;
-		}
-#endif
 		max_pause = bdi_max_pause(bdi, bdi_dirty);
 		min_pause = bdi_min_pause(bdi, max_pause,
 					  task_ratelimit, dirty_ratelimit,
@@ -1264,7 +1254,16 @@ cgroup_ioc:
 			pause = max_pause;
 			goto pause;
 		}
-		period = HZ * pages_dirtied / task_ratelimit;
+
+#ifdef CONFIG_BLK_DEV_THROTTLING
+		if (blkcg && task_ratelimit > blkcg->dirty_ratelimit) {
+cgroup_ioc:
+			blkcg_update_bandwidth(blkcg);
+			task_ratelimit = blkcg->dirty_ratelimit;
+			dirty_ratelimit = task_ratelimit;
+		}
+#endif
+		period = HZ * pages_dirtied / (task_ratelimit | 1);
 		pause = period;
 		if (current->dirty_paused_when)
 			pause -= now - current->dirty_paused_when;
