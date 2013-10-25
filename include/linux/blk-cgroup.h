@@ -113,6 +113,7 @@ struct blkio_cgroup {
 	spinlock_t lock;
 	struct hlist_head blkg_list;
 	struct list_head policy_list; /* list of blkio_policy_node */
+	struct percpu_counter nr_dirtied;
 };
 
 struct blkio_group_stats {

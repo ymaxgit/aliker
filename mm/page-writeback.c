@@ -34,6 +34,7 @@
 #include <linux/syscalls.h>
 #include <linux/buffer_head.h>
 #include <linux/pagevec.h>
+#include <linux/blk-cgroup.h>
 #include <trace/events/kmem.h>
 #include <trace/events/writeback.h>
 
@@ -244,6 +245,11 @@ EXPORT_SYMBOL_GPL(bdi_writeout_inc);
 
 void task_dirty_inc(struct task_struct *tsk)
 {
+#ifdef CONFIG_BLK_DEV_THROTTLING
+	struct blkio_cgroup *blkcg = task_blkio_cgroup(tsk);
+	if (blkcg)
+		__percpu_counter_add(&blkcg->nr_dirtied, 1, BDI_STAT_BATCH);
+#endif
 	prop_inc_single(&vm_dirties, &tsk->dirties);
 }
 
