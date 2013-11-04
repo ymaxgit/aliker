@@ -117,7 +117,7 @@ print_task(struct seq_file *m, struct rq *rq, struct task_struct *p)
 		SEQ_printf(m, " ");
 
 	SEQ_printf(m, "%15s %5d %9Ld.%06ld %9Ld %5d ",
-		p->comm, p->pid,
+		p->comm, task_pid_nr(p->pid),
 		SPLIT_NS(p->se.vruntime),
 		(long long)(p->nvcsw + p->nivcsw),
 		p->prio);
@@ -216,6 +216,15 @@ void print_cfs_rq(struct seq_file *m, int cpu, struct cfs_rq *cfs_rq)
 		   atomic_read(&tg->load_weight));
 #endif
 
+#ifdef CONFIG_CFS_BANDWIDTH
+	SEQ_printf(m, "  .%-30s: %d\n", "tg->cfs_bandwidth.timer_active",
+			cfs_rq->tg->cfs_bandwidth.timer_active);
+	SEQ_printf(m, "  .%-30s: %d\n", "throttled",
+			cfs_rq->throttled);
+	SEQ_printf(m, "  .%-30s: %d\n", "throttle_count",
+			cfs_rq->throttle_count);
+#endif
+
 	print_cfs_group_stats(m, cpu, cfs_rq->tg);
 #endif
 }
@@ -270,7 +279,7 @@ static void print_cpu(struct seq_file *m, int cpu)
 	P(nr_load_updates);
 	P(nr_uninterruptible);
 	PN(next_balance);
-	P(curr->pid);
+	SEQ_printf(m, "  .%-30s: %ld\n", "curr->pid", (long)(task_pid_nr(rq->curr)));
 	PN(clock);
 	P(cpu_load[0]);
 	P(cpu_load[1]);
@@ -393,7 +402,8 @@ void proc_sched_show_task(struct task_struct *p, struct seq_file *m)
 		unlock_task_sighand(p, &flags);
 	}
 
-	SEQ_printf(m, "%s (%d, #threads: %d)\n", p->comm, p->pid, num_threads);
+	SEQ_printf(m, "%s (%d, #threads: %d)\n", p->comm, task_pid_nr(p->pid),
+			 num_threads);
 	SEQ_printf(m,
 		"---------------------------------------------------------\n");
 #define __P(F) \
