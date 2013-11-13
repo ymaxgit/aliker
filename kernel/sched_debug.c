@@ -117,7 +117,7 @@ print_task(struct seq_file *m, struct rq *rq, struct task_struct *p)
 		SEQ_printf(m, " ");
 
 	SEQ_printf(m, "%15s %5d %9Ld.%06ld %9Ld %5d ",
-		p->comm, task_pid_nr(p->pid),
+		p->comm, task_pid_nr(p),
 		SPLIT_NS(p->se.vruntime),
 		(long long)(p->nvcsw + p->nivcsw),
 		p->prio);
@@ -402,7 +402,7 @@ void proc_sched_show_task(struct task_struct *p, struct seq_file *m)
 		unlock_task_sighand(p, &flags);
 	}
 
-	SEQ_printf(m, "%s (%d, #threads: %d)\n", p->comm, task_pid_nr(p->pid),
+	SEQ_printf(m, "%s (%d, #threads: %d)\n", p->comm, task_pid_nr(p),
 			 num_threads);
 	SEQ_printf(m,
 		"---------------------------------------------------------\n");
