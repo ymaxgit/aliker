@@ -16,7 +16,7 @@
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/blkdev.h>
-#include "blk-cgroup.h"
+#include <linux/blk-cgroup.h>
 #include <linux/genhd.h>
 
 #define MAX_KEY_LEN 100
@@ -1345,6 +1345,12 @@ static u64 blkiocg_file_read_u64 (struct cgroup *cgrp, struct cftype *cft) {
 			return (u64)blkcg->weight;
 		}
 		break;
+	case BLKIO_POLICY_THROTL:
+		switch (name) {
+		case BLKIO_THROTL_async_write_bps:
+			return (u64)blkcg->async_write_bps;
+		}
+		break;
 	default:
 		BUG();
 	}
@@ -1365,6 +1371,13 @@ blkiocg_file_write_u64(struct cgroup *cgrp, struct cftype *cft, u64 val)
 		switch(name) {
 		case BLKIO_PROP_weight:
 			return blkio_weight_write(blkcg, val);
+		}
+		break;
+	case BLKIO_POLICY_THROTL:
+		switch (name) {
+		case BLKIO_THROTL_async_write_bps:
+			blkcg->async_write_bps = val;
+			return 0;
 		}
 		break;
 	default:
@@ -1496,6 +1509,14 @@ struct cftype blkio_files[] = {
 				BLKIO_THROTL_io_queued),
 		.read_map = blkiocg_file_read_map,
 	},
+	{
+		.name = "throttle.async_write_bps",
+		.private = BLKIOFILE_PRIVATE(BLKIO_POLICY_THROTL,
+				BLKIO_THROTL_async_write_bps),
+		.read_u64 = blkiocg_file_read_u64,
+		.write_u64 = blkiocg_file_write_u64,
+		.max_write_len = 256,
+	},
 #endif /* CONFIG_BLK_DEV_THROTTLING */
 
 #ifdef CONFIG_DEBUG_BLK_CGROUP
@@ -1584,6 +1605,7 @@ static void blkiocg_destroy(struct cgroup_subsys *subsys, struct cgroup *cgroup)
 
 	free_css_id(&blkio_subsys, &blkcg->css);
 	rcu_read_unlock();
+	percpu_counter_destroy(&blkcg->nr_dirtied);
 	kfree(blkcg);
 }
 
@@ -1608,6 +1630,9 @@ done:
 	INIT_HLIST_HEAD(&blkcg->blkg_list);
 
 	INIT_LIST_HEAD(&blkcg->policy_list);
+
+	percpu_counter_init(&blkcg->nr_dirtied, 0);
+
 	return &blkcg->css;
 }
 

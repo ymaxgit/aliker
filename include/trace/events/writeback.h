@@ -146,10 +146,167 @@ DEFINE_EVENT(wbc_class, name, \
 DEFINE_WBC_EVENT(wbc_writeback_start);
 DEFINE_WBC_EVENT(wbc_writeback_written);
 DEFINE_WBC_EVENT(wbc_writeback_wait);
-DEFINE_WBC_EVENT(wbc_balance_dirty_start);
-DEFINE_WBC_EVENT(wbc_balance_dirty_written);
-DEFINE_WBC_EVENT(wbc_balance_dirty_wait);
 DEFINE_WBC_EVENT(wbc_writepage);
+
+#define KBps(x)			((x) << (PAGE_SHIFT - 10))
+
+TRACE_EVENT(blkcg_dirty_ratelimit,
+
+	TP_PROTO(unsigned long bps,
+		 unsigned long dirty_rate,
+		 unsigned long dirty_ratelimit,
+		 unsigned long balanced_dirty_ratelimit),
+
+	TP_ARGS(bps, dirty_rate, dirty_ratelimit, balanced_dirty_ratelimit),
+
+	TP_STRUCT__entry(
+		__field(unsigned long,	kbps)
+		__field(unsigned long,	dirty_rate)
+		__field(unsigned long,	dirty_ratelimit)
+		__field(unsigned long,	balanced_dirty_ratelimit)
+	),
+
+	TP_fast_assign(
+		__entry->kbps = bps >> 10;
+		__entry->dirty_rate = KBps(dirty_rate);
+		__entry->dirty_ratelimit = KBps(dirty_ratelimit);
+		__entry->balanced_dirty_ratelimit =
+					  KBps(balanced_dirty_ratelimit);
+	),
+
+	TP_printk("kbps=%lu dirty_rate=%lu "
+		  "dirty_ratelimit=%lu "
+		  "balanced_dirty_ratelimit=%lu",
+		  __entry->kbps,
+		  __entry->dirty_rate,
+		  __entry->dirty_ratelimit,
+		  __entry->balanced_dirty_ratelimit
+	)
+);
+
+TRACE_EVENT(bdi_dirty_ratelimit,
+
+	TP_PROTO(struct backing_dev_info *bdi,
+		 unsigned long dirty_rate,
+		 unsigned long task_ratelimit),
+
+	TP_ARGS(bdi, dirty_rate, task_ratelimit),
+
+	TP_STRUCT__entry(
+		__array(char,		bdi, 32)
+		__field(unsigned long,	write_bw)
+		__field(unsigned long,	avg_write_bw)
+		__field(unsigned long,	dirty_rate)
+		__field(unsigned long,	dirty_ratelimit)
+		__field(unsigned long,	task_ratelimit)
+		__field(unsigned long,	balanced_dirty_ratelimit)
+	),
+
+	TP_fast_assign(
+		strlcpy(__entry->bdi, dev_name(bdi->dev), 32);
+		__entry->write_bw	= KBps(bdi->write_bandwidth);
+		__entry->avg_write_bw	= KBps(bdi->avg_write_bandwidth);
+		__entry->dirty_rate	= KBps(dirty_rate);
+		__entry->dirty_ratelimit = KBps(bdi->dirty_ratelimit);
+		__entry->task_ratelimit	= KBps(task_ratelimit);
+		__entry->balanced_dirty_ratelimit =
+					  KBps(bdi->balanced_dirty_ratelimit);
+	),
+
+	TP_printk("bdi %s: "
+		  "write_bw=%lu awrite_bw=%lu dirty_rate=%lu "
+		  "dirty_ratelimit=%lu task_ratelimit=%lu "
+		  "balanced_dirty_ratelimit=%lu",
+		  __entry->bdi,
+		  __entry->write_bw,		/* write bandwidth */
+		  __entry->avg_write_bw,	/* avg write bandwidth */
+		  __entry->dirty_rate,		/* bdi dirty rate */
+		  __entry->dirty_ratelimit,	/* base ratelimit */
+		  __entry->task_ratelimit, /* ratelimit with position control */
+		  __entry->balanced_dirty_ratelimit /* the balanced ratelimit */
+	)
+);
+
+TRACE_EVENT(balance_dirty_pages,
+
+	TP_PROTO(struct backing_dev_info *bdi,
+		 unsigned long thresh,
+		 unsigned long bg_thresh,
+		 unsigned long dirty,
+		 unsigned long bdi_thresh,
+		 unsigned long bdi_dirty,
+		 unsigned long dirty_ratelimit,
+		 unsigned long task_ratelimit,
+		 unsigned long dirtied,
+		 unsigned long period,
+		 long pause,
+		 unsigned long start_time),
+
+	TP_ARGS(bdi, thresh, bg_thresh, dirty, bdi_thresh, bdi_dirty,
+		dirty_ratelimit, task_ratelimit,
+		dirtied, period, pause, start_time),
+
+	TP_STRUCT__entry(
+		__array(	 char,	bdi, 32)
+		__field(unsigned long,	limit)
+		__field(unsigned long,	setpoint)
+		__field(unsigned long,	dirty)
+		__field(unsigned long,	bdi_setpoint)
+		__field(unsigned long,	bdi_dirty)
+		__field(unsigned long,	dirty_ratelimit)
+		__field(unsigned long,	task_ratelimit)
+		__field(unsigned int,	dirtied)
+		__field(unsigned int,	dirtied_pause)
+		__field(unsigned long,	paused)
+		__field(	 long,	pause)
+		__field(unsigned long,	period)
+		__field(	 long,	think)
+	),
+
+	TP_fast_assign(
+		unsigned long freerun = (thresh + bg_thresh) / 2;
+		strlcpy(__entry->bdi, dev_name(bdi->dev), 32);
+
+		__entry->limit		= global_dirty_limit;
+		__entry->setpoint	= (global_dirty_limit + freerun) / 2;
+		__entry->dirty		= dirty;
+		__entry->bdi_setpoint	= __entry->setpoint *
+						bdi_thresh / (thresh + 1);
+		__entry->bdi_dirty	= bdi_dirty;
+		__entry->dirty_ratelimit = KBps(dirty_ratelimit);
+		__entry->task_ratelimit	= KBps(task_ratelimit);
+		__entry->dirtied	= dirtied;
+		__entry->dirtied_pause	= current->nr_dirtied_pause;
+		__entry->think		= current->dirty_paused_when == 0 ? 0 :
+			 (long)(jiffies - current->dirty_paused_when) * 1000/HZ;
+		__entry->period		= period * 1000 / HZ;
+		__entry->pause		= pause * 1000 / HZ;
+		__entry->paused		= (jiffies - start_time) * 1000 / HZ;
+	),
+
+
+	TP_printk("bdi %s: "
+		  "limit=%lu setpoint=%lu dirty=%lu "
+		  "bdi_setpoint=%lu bdi_dirty=%lu "
+		  "dirty_ratelimit=%lu task_ratelimit=%lu "
+		  "dirtied=%u dirtied_pause=%u "
+		  "paused=%lu pause=%ld period=%lu think=%ld",
+		  __entry->bdi,
+		  __entry->limit,
+		  __entry->setpoint,
+		  __entry->dirty,
+		  __entry->bdi_setpoint,
+		  __entry->bdi_dirty,
+		  __entry->dirty_ratelimit,
+		  __entry->task_ratelimit,
+		  __entry->dirtied,
+		  __entry->dirtied_pause,
+		  __entry->paused,	/* ms */
+		  __entry->pause,	/* ms */
+		  __entry->period,	/* ms */
+		  __entry->think	/* ms */
+	  )
+);
 
 #endif /* _TRACE_WRITEBACK_H */
 

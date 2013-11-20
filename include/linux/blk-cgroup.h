@@ -105,6 +105,7 @@ enum blkcg_file_name_throtl {
 	BLKIO_THROTL_io_service_bytes,
 	BLKIO_THROTL_io_serviced,
 	BLKIO_THROTL_io_queued,
+	BLKIO_THROTL_async_write_bps,
 };
 
 struct blkio_cgroup {
@@ -113,6 +114,11 @@ struct blkio_cgroup {
 	spinlock_t lock;
 	struct hlist_head blkg_list;
 	struct list_head policy_list; /* list of blkio_policy_node */
+	struct percpu_counter nr_dirtied;
+	unsigned long bw_time_stamp;
+	unsigned long dirtied_stamp;
+	unsigned long dirty_ratelimit;
+	unsigned long long async_write_bps;
 };
 
 struct blkio_group_stats {
