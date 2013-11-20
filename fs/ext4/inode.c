@@ -43,6 +43,7 @@
 #include "ext4_jbd2.h"
 #include "xattr.h"
 #include "acl.h"
+#include "subtree.h"
 
 #include <trace/events/ext4.h>
 
@@ -5834,6 +5835,10 @@ struct inode *ext4_iget(struct super_block *sb, unsigned long ino)
 		/* Validate block references which are part of inode */
 		ret = ext4_check_inode_blockref(inode);
 	}
+	if (ret)
+		goto bad_inode;
+
+	ret = ext4_subtree_read(inode);
 	if (ret)
 		goto bad_inode;
 
