@@ -20,7 +20,7 @@
 
 /*
  * Subtree assumptions:
- * (1) Each inode has subtree id. This id is persisitently stored inside
+ * (1) Each inode has subtree id. This id is persistently stored inside
  *     inode's xattr, usually inside ibody
  * (2) Subtree id is inherent from parent directory
  */
@@ -34,14 +34,14 @@ int ext3_subtree_xattr_read(struct inode *inode, unsigned int *subtree)
 	__le32 dsk_subtree;
 	int retval;
 
+	dsk_subtree = 0;
 	retval = ext3_xattr_get(inode, EXT3_XATTR_INDEX_SUBTREE, "",
 				&dsk_subtree, sizeof(dsk_subtree));
-	if (retval > 0) {
-		if (retval != sizeof(dsk_subtree))
-			return -EIO;
-		else
-			retval = 0;
-	}
+	if (retval < 0)
+		return retval;
+	if (retval != sizeof(dsk_subtree))
+		return -EIO;
+
 	*subtree = le32_to_cpu(dsk_subtree);
 	return retval;
 }
@@ -59,12 +59,6 @@ int ext3_subtree_xattr_write(handle_t *handle, struct inode *inode,
 	retval = ext3_xattr_set_handle(handle, inode,
 				       EXT3_XATTR_INDEX_SUBTREE, "",
 				       &dskid, sizeof(dskid), xflags);
-	if (retval > 0) {
-		if (retval != sizeof(dskid))
-			retval = -EIO;
-		else
-			retval = 0;
-	}
 	return retval;
 }
 
@@ -81,19 +75,19 @@ int ext3_subtree_change(struct inode *inode, unsigned int new_subtree)
 	struct dquot *old_dquot[MAXQUOTAS] = {};
 	int old_subtree, new_dq_id;
 
-	if (!sb_has_quota_active(inode->i_sb, GRPQUOTA)) {
-		ret = -EOPNOTSUPP;
-		goto out;
-	}
+	if (!sb_has_quota_active(inode->i_sb, GRPQUOTA))
+		return -EOPNOTSUPP;
 	
-	/* if dir_id == 0 before, this inode is accounted in its standard
+	BUG_ON(!IS_SBTR_ID(new_subtree));
+
+	/*
+	 * If dir_id == 0 before, this inode is accounted in its standard
 	 * group quota
 	 */
 	old_subtree = ext3_get_subtree(inode);
 
-	BUG_ON(!IS_SBTR_ID(new_subtree));
-
-	/* To set dir_id == 0 means we want to cancel the dir quota
+	/*
+	 * To set dir_id == 0 means we want to cancel the dir quota
 	 * accounting, so we shall give it back to the original owner.
 	 */
 	if (!new_subtree)
@@ -115,15 +109,11 @@ int ext3_subtree_change(struct inode *inode, unsigned int new_subtree)
 	old_dquot[GRPQUOTA] = inode->i_dquot[GRPQUOTA];
 	new_dquot[GRPQUOTA] = dqget(inode->i_sb, new_dq_id, GRPQUOTA);
 	
-	ret = 0;
-
 	if (unlikely(!new_dquot[GRPQUOTA]))
-		goto out;
-
+		return -EFAULT;
 	if (unlikely(!old_dquot[GRPQUOTA] ||
-		old_dquot[GRPQUOTA] == new_dquot[GRPQUOTA])) {
+		     old_dquot[GRPQUOTA] == new_dquot[GRPQUOTA]))
 		goto out_drop_dquot;
-	}
 
 retry:
 	handle = ext3_journal_start(inode, credits);
@@ -150,9 +140,11 @@ retry:
 	}
 
 	ret = __dquot_transfer(inode, new_dquot);
-	/* if __dquot_transfer() fails, new_dquot[] keeps untouched. just
+	/*
+	 * If __dquot_transfer() fails, new_dquot[] keeps untouched. just
 	 * release it and quit,
-	 * if __dquot_transfer() success, new_dquot[] is assigned to
+	 *
+	 * If __dquot_transfer() success, new_dquot[] is assigned to
 	 * old_dquot[]. Because it might need fall back later, we don't
 	 * release new_dquot[] now. This 'new_dquot[]' should be released
 	 * after the xattr is also corrected.
@@ -170,32 +162,30 @@ retry:
 		 * Function may fail only due to fatal error, nor than less
 		 * we have tried to rollback quota changes.
 		 */
-		/* This 'new_dquot' is the same with old_dquot */
+		/* This 'new_dquot' is the same with 'old_dquot' */
 		__dquot_transfer(inode, new_dquot);
 		ext3_std_error(inode->i_sb, ret);
-	} else 
+	} else {
 		ext3_set_subtree(inode, new_subtree);
+	}
 
 out_journal:
 	ret2 = ext3_journal_stop(handle);
-out_drop_dquot:
-	dqput(new_dquot[GRPQUOTA]);
-out:
 	if (ret2)
 		ret = ret2;
+out_drop_dquot:
+	dqput(new_dquot[GRPQUOTA]);
 	return ret;
 }
 
 int ext3_subtree_read(struct inode *inode)
 {
-	int ret = 0;
+	int ret;
 	int subtree = 0;
 
 	ret = ext3_subtree_xattr_read(inode, &subtree);
-	if (ret == -ENODATA) {
-		subtree = 0;
+	if (ret == -ENODATA)
 		ret = 0;
-	}
 	if (!ret)
 		ext3_set_subtree(inode, subtree);
 	return ret;
@@ -259,8 +249,10 @@ ext3_xattr_subtree_set(struct inode *inode, const char *name,
 {
 	unsigned long new_subtree;
 	char buf[11];
+
 	if (strcmp(name, "") != 0 || size + 1 > sizeof(buf))
 		return -EINVAL;
+
 	/* try to make the users believe there are not such xattr at all */
 	if (in_noninit_pid_ns(current->nsproxy->pid_ns))
 		return -EOPNOTSUPP;
@@ -270,8 +262,9 @@ ext3_xattr_subtree_set(struct inode *inode, const char *name,
 	if (strict_strtoul(buf, 10, &new_subtree))
 		return -EINVAL;
 	if (!IS_SBTR_ID(new_subtree)) {
-		printk(KERN_WARNING "the min valid subtree id is 0x%x, or 0\n",
-		       SBTR_MIN_ID);
+		ext3_warning(inode->i_sb, __func__,
+			     "the min valid subtree id is 0x%x, or 0\n",
+			     SBTR_MIN_ID);
 		return -EINVAL;
 	}
 	return ext3_subtree_change(inode, new_subtree);

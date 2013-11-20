@@ -1823,7 +1823,7 @@ struct super_operations {
 #endif
 	int (*bdev_try_to_free_page)(struct super_block*, struct page*, gfp_t);
 #ifdef CONFIG_QUOTA
-	u32 (*get_subtree)(const struct inode *inode);
+	u32 (*get_subtree)(struct inode *inode);
 #endif
 };
 
