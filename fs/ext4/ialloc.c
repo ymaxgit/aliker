@@ -28,6 +28,7 @@
 #include "ext4_jbd2.h"
 #include "xattr.h"
 #include "acl.h"
+#include "subtree.h"
 
 #include <trace/events/ext4.h>
 
@@ -1047,6 +1048,8 @@ got:
 
 	ei->i_extra_isize = EXT4_SB(sb)->s_want_extra_isize;
 
+	ext4_set_subtree(inode, ext4_get_subtree(dir));
+
 	ret = inode;
 	if (vfs_dq_alloc_inode(inode)) {
 		err = -EDQUOT;
@@ -1060,6 +1063,12 @@ got:
 	err = ext4_init_security(handle, inode, dir);
 	if (err)
 		goto fail_free_drop;
+
+	if (ext4_get_subtree(dir)) {
+		err = ext4_subtree_init(handle, inode);
+		if (err)
+			goto fail_free_drop;
+	}
 
 	if (EXT4_HAS_INCOMPAT_FEATURE(sb, EXT4_FEATURE_INCOMPAT_EXTENTS)) {
 		/* set extent flag only for directory, file and normal symlink*/

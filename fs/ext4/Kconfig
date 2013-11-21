@@ -64,6 +64,18 @@ config EXT4_FS_SECURITY
 	  If you are not using a security module that requires using
 	  extended attributes for file security labels, say N.
 
+config EXT4_FS_SUBTREE
+	bool "Ext4 Subtree Id Support"
+	select SUBTREE
+	depends on EXT4_FS_XATTR
+	help
+	  Enables subtree inode identifier support for ext4 filesystem.
+	  This feature allow to assign extented inode's identifier similar to
+	  uid/gid. Value is stored in xattr "system.subtree" and may be used
+	  as additional quota limit.
+
+	  If unsure say N.
+
 config EXT4_DEBUG
 	bool "EXT4 debugging support"
 	depends on EXT4_FS

@@ -49,6 +49,7 @@
 #include "xattr.h"
 #include "acl.h"
 #include "mballoc.h"
+#include "subtree.h"
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/ext4.h>
@@ -1175,6 +1176,9 @@ static const struct super_operations ext4_sops = {
 	.quota_write	= ext4_quota_write,
 #endif
 	.bdev_try_to_free_page = bdev_try_to_free_page,
+#ifdef CONFIG_EXT4_FS_SUBTREE
+	.get_subtree	= ext4_get_subtree,
+#endif
 };
 
 static const struct super_operations ext4_nojournal_sops = {
@@ -1194,6 +1198,9 @@ static const struct super_operations ext4_nojournal_sops = {
 	.quota_write	= ext4_quota_write,
 #endif
 	.bdev_try_to_free_page = bdev_try_to_free_page,
+#ifdef CONFIG_EXT4_FS_SUBTREE
+	.get_subtree	= ext4_get_subtree,
+#endif
 };
 
 static const struct export_operations ext4_export_ops = {
