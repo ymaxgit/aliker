@@ -1424,15 +1424,17 @@ static bool slaves_support_netpoll(struct net_device *bond_dev)
 {
 	struct bonding *bond = netdev_priv(bond_dev);
 	struct slave *slave;
-	int i = 0;
-	bool ret = true;
+	int i;
+	bool ret = false;
 
 	bond_for_each_slave(bond, slave, i) {
-		if ((slave->dev->priv_flags & IFF_DISABLE_NETPOLL) ||
-		    !slave->dev->netdev_ops->ndo_poll_controller)
-			ret = false;
+		if (!(slave->dev->priv_flags & IFF_DISABLE_NETPOLL) &&
+		    slave->dev->netdev_ops->ndo_poll_controller) {
+			ret = true;
+			break;
+		}
 	}
-	return i != 0 && ret;
+	return ret;
 }
 
 static void bond_poll_controller(struct net_device *bond_dev)

@@ -172,19 +172,19 @@ static int br_set_tx_csum(struct net_device *dev, u32 data)
 bool br_devices_support_netpoll(struct net_bridge *br)
 {
 	struct net_bridge_port *p;
-	bool ret = true;
-	int count = 0;
+	bool ret = false;
 	unsigned long flags;
 
 	spin_lock_irqsave(&br->lock, flags);
 	list_for_each_entry(p, &br->port_list, list) {
-		count++;
-		if ((p->dev->priv_flags & IFF_DISABLE_NETPOLL) ||
-		    !p->dev->netdev_ops->ndo_poll_controller)
-			ret = false;
+		if (!(p->dev->priv_flags & IFF_DISABLE_NETPOLL) &&
+		    p->dev->netdev_ops->ndo_poll_controller) {
+			ret = true;
+			break;
+		}
 	}
 	spin_unlock_irqrestore(&br->lock, flags);
-	return count != 0 && ret;
+	return ret;
 }
 
 static void br_poll_controller(struct net_device *br_dev)
