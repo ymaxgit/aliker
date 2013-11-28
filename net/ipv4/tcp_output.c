@@ -59,6 +59,9 @@ int sysctl_tcp_base_mss __read_mostly = 512;
 /* By default, RFC2861 behavior.  */
 int sysctl_tcp_slow_start_after_idle __read_mostly = 1;
 
+/* By default, TCP loopback bypass */
+int sysctl_tcp_friends __read_mostly = 0;
+
 /* Account for new data that has been sent to the network. */
 static void tcp_event_new_data_sent(struct sock *sk, struct sk_buff *skb)
 {
@@ -650,9 +653,12 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	tcb = TCP_SKB_CB(skb);
 	memset(&opts, 0, sizeof(opts));
 
-	if (unlikely(tcb->flags & TCPCB_FLAG_SYN))
+	if (unlikely(tcb->flags & TCPCB_FLAG_SYN)) {
+		/* Only try to make friends if enabled */
+		if (sysctl_tcp_friends)
+			skb->friend = sk;
 		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
-	else
+	} else
 		tcp_options_size = tcp_established_options(sk, skb, &opts,
 							   &md5);
 	tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
@@ -2288,6 +2294,11 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 	}
 
 	memset(&opts, 0, sizeof(opts));
+
+	/* Only try to make friends if enabled */
+	if (sysctl_tcp_friends)
+		skb->friend = sk;
+
 #ifdef CONFIG_SYN_COOKIES
 	if (unlikely(req->cookie_ts))
 		TCP_SKB_CB(skb)->when = cookie_init_timestamp(req);

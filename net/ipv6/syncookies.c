@@ -196,6 +196,7 @@ struct sock *cookie_v6_check(struct sock *sk, struct sk_buff *skb)
 	if (!req)
 		goto out;
 
+	req->friend = skb->friend;
 	ireq = inet_rsk(req);
 	ireq6 = inet6_rsk(req);
 	treq = tcp_rsk(req);
