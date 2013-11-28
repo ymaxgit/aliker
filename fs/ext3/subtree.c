@@ -34,7 +34,6 @@ int ext3_subtree_xattr_read(struct inode *inode, unsigned int *subtree)
 	__le32 dsk_subtree;
 	int retval;
 
-	dsk_subtree = 0;
 	retval = ext3_xattr_get(inode, EXT3_XATTR_INDEX_SUBTREE, "",
 				&dsk_subtree, sizeof(dsk_subtree));
 	if (retval < 0)
@@ -43,7 +42,7 @@ int ext3_subtree_xattr_read(struct inode *inode, unsigned int *subtree)
 		return -EIO;
 
 	*subtree = le32_to_cpu(dsk_subtree);
-	return retval;
+	return 0;
 }
 
 /*
