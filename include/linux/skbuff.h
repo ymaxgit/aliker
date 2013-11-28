@@ -310,6 +310,7 @@ typedef unsigned char *sk_buff_data_t;
  *	@_skb_dst: destination entry
  *	@sp: the security path, used for xfrm
  *	@cb: Control buffer. Free for use by every layer. Put private vars here
+ *	@friend: loopback friend socket
  *	@len: Length of actual data
  *	@data_len: Data length
  *	@mac_len: Length of link layer header
@@ -373,6 +374,7 @@ struct sk_buff {
 	 */
 	char			cb[48];
 
+	struct sock             *friend;
 	unsigned int		len,
 				data_len;
 	__u16			mac_len,

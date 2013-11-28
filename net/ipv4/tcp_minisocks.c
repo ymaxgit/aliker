@@ -279,6 +279,9 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 
 	tcp_death_row.period = sysctl_tcp_tw_timeout / INET_TWDR_TWKILL_SLOTS;
 
+	if (sk->sk_friend)
+		goto out;
+
 	if (tcp_death_row.sysctl_tw_recycle && tp->rx_opt.ts_recent_stamp)
 		recycle_ok = icsk->icsk_af_ops->remember_stamp(sk);
 
@@ -357,6 +360,7 @@ void tcp_time_wait(struct sock *sk, int state, int timeo)
 	}
 
 	tcp_update_metrics(sk);
+out:
 	tcp_done(sk);
 }
 

@@ -183,6 +183,14 @@ tcp_fack - BOOLEAN
 	Enable FACK congestion avoidance and fast retransmission.
 	The value is not used, if tcp_sack is not enabled.
 
+tcp_friends - BOOLEAN
+	If set, TCP loopback socket pair stack bypass is enabled such
+	that all data sent will be directly queued to the receiver's
+	socket for receive. Note, normal connection establishment and
+	finish is used to make friends so any loopback interpose, e.g.
+	tcpdump, will see these TCP segements but no data segments.
+	Default: 1
+
 tcp_fin_timeout - INTEGER
 	Time to hold socket in state FIN-WAIT-2, if it was closed
 	by our side. Peer can be broken and never close its side,

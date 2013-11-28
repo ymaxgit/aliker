@@ -81,6 +81,42 @@ int sk_stream_wait_connect(struct sock *sk, long *timeo_p)
 EXPORT_SYMBOL(sk_stream_wait_connect);
 
 /**
+ * sk_stream_wait_friend - Wait for a socket to make friends
+ * @sk: sock to wait on
+ * @timeo_p: for how long to wait
+ *
+ * Must be called with the socket locked.
+ */
+int sk_stream_wait_friend(struct sock *sk, long *timeo_p)
+{
+	struct task_struct *tsk = current;
+	DEFINE_WAIT(wait);
+	int done;
+
+	do {
+		int err = sock_error(sk);
+		if (err)
+			return err;
+		if (!sk->sk_friend)
+			return -EBADFD;
+		if (!*timeo_p)
+			return -EAGAIN;
+		if (signal_pending(tsk))
+			return sock_intr_errno(*timeo_p);
+
+		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
+		sk->sk_write_pending++;
+		done = sk_wait_event(sk, timeo_p,
+				     !sk->sk_err &&
+				     sk->sk_friend->sk_friend);
+		finish_wait(sk->sk_sleep, &wait);
+		sk->sk_write_pending--;
+	} while (!done);
+	return 0;
+}
+EXPORT_SYMBOL(sk_stream_wait_friend);
+
+/**
  * sk_stream_closing - Return 1 if we still have things to send in our buffers.
  * @sk: socket to verify
  */

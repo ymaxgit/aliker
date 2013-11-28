@@ -607,6 +607,26 @@ struct sock *inet_csk_clone(struct sock *sk, const struct request_sock *req,
 	if (newsk != NULL) {
 		struct inet_connection_sock *newicsk = inet_csk(newsk);
 
+		if (req->friend) {
+			/*
+			 * Make friends with the requestor but the ACK of
+			 * the request is already in-flight so the race is
+			 * on to make friends before the ACK is processed.
+			 * If the requestor's sk_friend value is != NULL
+			 * then the requestor has already processed the
+			 * ACK so indicate state change to wake'm up.
+			 */
+			struct sock *was;
+
+			sock_hold(req->friend);
+			newsk->sk_friend = req->friend;
+			sock_hold(newsk);
+			was = xchg(&req->friend->sk_friend, newsk);
+			/* If requester already connect()ed, maybe sleeping */
+			if (was && !sock_flag(req->friend, SOCK_DEAD))
+				sk->sk_state_change(req->friend);
+		}
+
 		newsk->sk_state = TCP_SYN_RECV;
 		newicsk->icsk_bind_hash = NULL;
 

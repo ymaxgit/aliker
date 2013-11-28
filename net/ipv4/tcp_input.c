@@ -512,6 +512,9 @@ void tcp_rcv_space_adjust(struct sock *sk)
 	int time;
 	int space;
 
+	if (sk->sk_friend)
+		return;
+
 	if (tp->rcvq_space.time == 0)
 		goto new_measure;
 
@@ -4345,8 +4348,9 @@ static int tcp_prune_queue(struct sock *sk);
 
 static inline int tcp_try_rmem_schedule(struct sock *sk, unsigned int size)
 {
-	if (atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf ||
-	    !sk_rmem_schedule(sk, size)) {
+	if (!sk->sk_friend &&
+		(atomic_read(&sk->sk_rmem_alloc) > sk->sk_rcvbuf ||
+	    !sk_rmem_schedule(sk, size))) {
 
 		if (tcp_prune_queue(sk) < 0)
 			return -1;
@@ -5496,6 +5500,16 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 		 *    state to ESTABLISHED..."
 		 */
 
+		if (skb->friend) {
+			/*
+			 * If friends haven't been made yet, our sk_friend
+			 * still == NULL, then update with the ACK's friend
+			 * value (the listen()er's sock addr) which is used
+			 * as a place holder.
+			 */
+			(void)cmpxchg(&sk->sk_friend, NULL, skb->friend);
+		}
+
 		TCP_ECN_rcv_synack(tp, th);
 
 		tp->snd_wl1 = TCP_SKB_CB(skb)->seq;
@@ -5571,9 +5585,9 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 			sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
 		}
 
-		if (sk->sk_write_pending ||
+		if (!skb->friend && (sk->sk_write_pending ||
 		    icsk->icsk_accept_queue.rskq_defer_accept ||
-		    icsk->icsk_ack.pingpong) {
+		    icsk->icsk_ack.pingpong)) {
 			/* Save one ACK. Data will be ready after
 			 * several ticks, if write_pending is set.
 			 *

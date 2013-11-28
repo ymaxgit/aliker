@@ -1918,6 +1918,7 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 #ifdef CONFIG_NET_DMA
 	skb_queue_head_init(&sk->sk_async_wait_queue);
 #endif
+	sk->sk_friend		=	NULL;
 
 	sk->sk_send_head	=	NULL;
 

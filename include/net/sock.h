@@ -149,6 +149,7 @@ struct sock_common {
   *	@sk_shutdown: mask of %SEND_SHUTDOWN and/or %RCV_SHUTDOWN
   *	@sk_userlocks: %SO_SNDBUF and %SO_RCVBUF settings
   *	@sk_lock:	synchronizer
+  *	@sk_friend: loopback friend socket
   *	@sk_rcvbuf: size of receive buffer in bytes
   *	@sk_sleep: sock wait queue
   *	@sk_dst_cache: destination cache
@@ -237,6 +238,14 @@ struct sock {
 	kmemcheck_bitfield_end(flags);
 	int			sk_rcvbuf;
 	socket_lock_t		sk_lock;
+	/*
+	 * If socket has a friend (sk_friend != NULL) then a send skb is
+	 * enqueued directly to the friend's sk_receive_queue such that:
+	 *
+	 *        sk_sndbuf -> sk_sndbuf + sk_friend->sk_rcvbuf
+	 *   sk_wmem_queued -> sk_friend->sk_rmem_alloc
+	 */
+	struct sock		*sk_friend;
 	/*
 	 * The backlog queue is special, it is always used with
 	 * the per-socket spinlock held and requires low latency
@@ -609,24 +618,40 @@ static inline int sk_acceptq_is_full(struct sock *sk)
 	return sk->sk_ack_backlog > sk->sk_max_ack_backlog;
 }
 
+static inline int sk_wmem_queued_get(const struct sock *sk)
+{
+	if (sk->sk_friend)
+		return atomic_read(&sk->sk_friend->sk_rmem_alloc);
+	else
+		return sk->sk_wmem_queued;
+}
+
+static inline int sk_sndbuf_get(const struct sock *sk)
+{
+	if (sk->sk_friend)
+		return sk->sk_sndbuf + sk->sk_friend->sk_rcvbuf;
+	else
+		return sk->sk_sndbuf;
+}
+
 /*
  * Compute minimal free write space needed to queue new packets.
  */
 static inline int sk_stream_min_wspace(struct sock *sk)
 {
-	return sk->sk_wmem_queued >> 1;
+	return sk_wmem_queued_get(sk) >> 1;
 }
 
 static inline int sk_stream_wspace(struct sock *sk)
 {
-	return sk->sk_sndbuf - sk->sk_wmem_queued;
+	return sk_sndbuf_get(sk) - sk_wmem_queued_get(sk);
 }
 
 extern void sk_stream_write_space(struct sock *sk);
 
 static inline int sk_stream_memory_free(struct sock *sk)
 {
-	return sk->sk_wmem_queued < sk->sk_sndbuf;
+	return sk_wmem_queued_get(sk) < sk_sndbuf_get(sk);
 }
 
 /* OOB backlog add */
@@ -702,6 +727,7 @@ static inline void sock_rps_save_rxhash(struct sock *sk, u32 rxhash)
 	})
 
 extern int sk_stream_wait_connect(struct sock *sk, long *timeo_p);
+extern int sk_stream_wait_friend(struct sock *sk, long *timeo_p);
 extern int sk_stream_wait_memory(struct sock *sk, long *timeo_p);
 extern void sk_stream_wait_close(struct sock *sk, long timeo_p);
 extern int sk_stream_error(struct sock *sk, int flags, int err);

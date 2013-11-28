@@ -614,6 +614,15 @@ extern u32	__tcp_select_window(struct sock *sk);
  */
 #define tcp_time_stamp		((__u32)(jiffies))
 
+/* If skb->friend, TCP friends per packet state.
+ */
+struct friend_skb_parm {
+	bool    tail_inuse;             /* In use by skb->friend send while */
+					/* on sk_receive_queue for tail put */
+};
+
+#define TCP_FRIEND_CB(tcb) (&(tcb)->header.hf)
+
 /* This is what the send packet queuing engine uses to pass
  * TCP per-packet control information to the transmission
  * code.  We also store the host-order sequence numbers in
@@ -627,6 +636,7 @@ struct tcp_skb_cb {
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
 		struct inet6_skb_parm	h6;
 #endif
+		struct friend_skb_parm  hf;
 	} header;	/* For incoming frames		*/
 	__u32		seq;		/* Starting sequence number	*/
 	__u32		end_seq;	/* SEQ + FIN + SYN + datalen	*/
@@ -941,7 +951,7 @@ static inline int tcp_prequeue(struct sock *sk, struct sk_buff *skb)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 
-	if (sysctl_tcp_low_latency || !tp->ucopy.task)
+	if (sysctl_tcp_low_latency || !tp->ucopy.task || sk->sk_friend)
 		return 0;
 
 	__skb_queue_tail(&tp->ucopy.prequeue, skb);
@@ -1221,6 +1231,7 @@ extern int			tcp_v4_md5_do_del(struct sock *sk,
 #else
 #define tcp_twsk_md5_key(twsk)	NULL
 #endif
+extern int sysctl_tcp_friends;
 
 extern struct tcp_md5sig_pool	**tcp_alloc_md5sig_pool(struct sock *);
 extern void			tcp_free_md5sig_pool(void);
