@@ -3719,6 +3719,109 @@ static int mem_cgroup_oom_control_write(struct cgroup *cgrp,
 	return 0;
 }
 
+static int mem_cgroup_drop_list(struct mem_cgroup *mem,
+				int node, int zid, enum lru_list lru)
+{
+	struct mem_cgroup_per_zone *mz;
+	unsigned long flags, loop;
+	struct list_head *list;
+	struct zone *zone;
+	int ret = 0;
+	struct page *busy = NULL;
+	unsigned long count = 0;
+
+	zone = &NODE_DATA(node)->node_zones[zid];
+	mz = mem_cgroup_zoneinfo(mem, node, zid);
+	list = &mz->lruvec.lists[lru];
+
+	loop = MEM_CGROUP_ZSTAT(mz, lru);
+	mem_cgroup_uncharge_start();
+	while (loop--) {
+		struct page *page;
+
+		ret = 0;
+		spin_lock_irqsave(&zone->lru_lock, flags);
+		if (list_empty(list)) {
+			spin_unlock_irqrestore(&zone->lru_lock, flags);
+			break;
+		}
+		page = list_entry(list->prev, struct page, lru);
+		if (busy == page) {
+			list_move(&page->lru, list);
+			spin_unlock_irqrestore(&zone->lru_lock, flags);
+			busy = NULL;
+			loop++;
+			continue;
+		}
+		spin_unlock_irqrestore(&zone->lru_lock, flags);
+
+		if (!page_cache_get_speculative(page) || !trylock_page(page)) {
+			busy = page;
+			continue;
+		}
+
+		ret = invalidate_inode_page(page);
+		unlock_page(page);
+
+		if (!ret) {
+			busy = page;
+
+			/*
+			 * Invalidation is a hint that the page is no longer
+			 * of interest and try to speed up its reclaim.
+			 */
+			deactivate_page(page);
+		} else {
+			put_page(page);
+			busy = NULL;
+		}
+
+		count += ret;
+	}
+	mem_cgroup_uncharge_end();
+
+	return count;
+}
+
+static void mem_cgroup_drop_caches(struct mem_cgroup *mem)
+{
+	int node, zid;
+
+	css_get(&mem->css);
+
+	/* This is for making all *used* pages to be on LRU. */
+	lru_add_drain_all();
+	drain_all_stock_sync();
+	for_each_node_state(node, N_HIGH_MEMORY) {
+		for (zid = 0; zid < MAX_NR_ZONES; zid++) {
+			mem_cgroup_drop_list(mem, node, zid,
+				LRU_ACTIVE_FILE);
+			mem_cgroup_drop_list(mem, node, zid,
+				LRU_INACTIVE_FILE);
+		}
+	}
+
+	memcg_oom_recover(mem);
+	css_put(&mem->css);
+
+	return;
+}
+
+static int mem_cgroup_drop_caches_write(struct cgroup *cgrp, struct cftype *cft,
+				       u64 val)
+{
+	if (val & 1)
+		mem_cgroup_drop_caches(mem_cgroup_from_cont(cgrp));
+	/* TODO: drop slab if val & 2 */
+
+	return 0;
+}
+
+static u64 mem_cgroup_drop_caches_read(struct cgroup *cgrp, struct cftype *cft)
+{
+	return 0;
+}
+
 static struct cftype mem_cgroup_files[] = {
 	{
 		.name = "usage_in_bytes",
@@ -3779,6 +3882,11 @@ static struct cftype mem_cgroup_files[] = {
 		.register_event = mem_cgroup_oom_register_event,
 		.unregister_event = mem_cgroup_oom_unregister_event,
 		.private = MEMFILE_PRIVATE(_OOM_TYPE, OOM_CONTROL),
+	},
+	{
+		.name = "drop_caches",
+		.write_u64 = mem_cgroup_drop_caches_write,
+		.read_u64 = mem_cgroup_drop_caches_read,
 	},
 };
 
