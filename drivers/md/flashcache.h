@@ -183,6 +183,8 @@ struct sequential_io {
 							 * evict sequential i/o when we see some random,
 							 * but small enough that searching through it isn't slow
 							 * (currently we do linear search, we could consider hashed */
+#define WEIGHT_DELTA 2				/* add extra weight to group LRU
+						 * to avoid cacheblk-shaking */
 								
 struct flashcache_group {
 	unsigned int		weight;

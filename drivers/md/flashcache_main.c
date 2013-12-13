@@ -86,6 +86,7 @@ static void flashcache_dirty_writeback(struct cache_c *dmc, int index);
 void flashcache_sync_blocks(struct cache_c *dmc);
 static void flashcache_start_uncached_io(struct cache_c *dmc,
 		struct bio *bio, int submit);
+static void find_reclaim_dbn(struct cache_c *dmc, int start_index, int *index);
 
 extern struct work_struct _kcached_wq;
 extern u_int64_t size_hist[];
@@ -527,6 +528,42 @@ travel_lru(struct cache_c *dmc, sector_t dbn, int start_index, int *valid,
 }
 
 void
+flashcache_lru_move_to_root(struct cache_c *dmc, struct flashcache_group *fcg,
+		int index)
+{
+	int set = index / dmc->assoc;
+	int start_index = set * dmc->assoc;
+	int my_index = index - start_index;
+	struct cacheblock *cacheblk = &dmc->cache[index];
+
+	/* Remove from group LRU */
+	if (cacheblk->lru_prev != FLASHCACHE_LRU_NULL)
+		dmc->cache[cacheblk->lru_prev + start_index].lru_next =
+			cacheblk->lru_next;
+	else
+		fcg->lru_head[set] = cacheblk->lru_next;
+	if (cacheblk->lru_next != FLASHCACHE_LRU_NULL)
+		dmc->cache[cacheblk->lru_next + start_index].lru_prev =
+			cacheblk->lru_prev;
+	else
+		fcg->lru_tail[set] = cacheblk->lru_prev;
+
+	/* And add it to root LRU Head */
+	cacheblk->lru_next = dmc->cache_sets[set].lru_head;
+	cacheblk->lru_prev = FLASHCACHE_LRU_NULL;
+	if (dmc->cache_sets[set].lru_head == FLASHCACHE_LRU_NULL)
+		dmc->cache_sets[set].lru_tail = my_index;
+	else
+		dmc->cache[dmc->cache_sets[set].lru_head +
+			start_index].lru_prev = my_index;
+	dmc->cache_sets[set].lru_head = my_index;
+
+	/* update the blk_cnt of groups */
+	dmc->root_fcg.blk_cnt++;
+	fcg->blk_cnt--;
+}
+
+void
 flashcache_lru_move_from_root(struct cache_c *dmc, struct flashcache_group *fcg,
 		int index)
 {
@@ -672,8 +709,74 @@ find_valid_dbn(struct cache_c *dmc, sector_t dbn,
 			flashcache_reclaim_lru_movetail(dmc, *invalid);
 }
 
-/* Search for a slot that we can reclaim */
+/* Search all LRUs for a slot that we can reclaim */
 static void
+find_reclaim_dbn_by_lru(struct cache_c *dmc, int start_index, int *index,
+		struct flashcache_group *fcg)
+{
+	int head;
+	int set = start_index / dmc->assoc;
+	u_int16_t *lru_head, *lru_tail;
+	struct hlist_node *pos, *n;
+	struct flashcache_group *tmp_fcg;
+	struct cacheblock *cacheblk;
+
+	/* if we can reclaim VALID block from root LRU */
+	if (!under_group_watermark(dmc, &dmc->root_fcg, 0)) {
+		find_reclaim_dbn(dmc, start_index, index);
+		if (*index != -1) {
+			if (fcg != &dmc->root_fcg &&
+					under_group_watermark(dmc, fcg, 0))
+				flashcache_lru_move_from_root(dmc, fcg, *index);
+			return;
+		}
+	}
+	/* then check all group LRUs to reclaim VALID blocks */
+	hlist_for_each_entry_safe(tmp_fcg, pos, n, &dmc->fcg_list, fcg_node) {
+		if (tmp_fcg == &dmc->root_fcg)
+			continue;
+		if (under_group_watermark(dmc, tmp_fcg, WEIGHT_DELTA))
+			continue;
+		head = tmp_fcg->lru_head[set];
+		while (head != FLASHCACHE_LRU_NULL) {
+			cacheblk = &dmc->cache[head + start_index];
+			if (cacheblk->cache_state == VALID) {
+				VERIFY((cacheblk - &dmc->cache[0]) ==
+				       (head + start_index));
+				*index = cacheblk - &dmc->cache[0];
+				VERIFY((dmc->cache[*index].cache_state &
+							FALLOW_DOCLEAN) == 0);
+				flashcache_lru_move_to_root(dmc, tmp_fcg,
+						*index);
+				break;
+			}
+			head = cacheblk->lru_next;
+		}
+	}
+	/* finally check wether we could reclaim curent group */
+	if (fcg != &dmc->root_fcg && !under_group_watermark(dmc, fcg, 0)) {
+		lru_head = fcg->lru_head + set;
+		lru_tail = fcg->lru_tail + set;
+		head = *lru_head;
+		while (head != FLASHCACHE_LRU_NULL) {
+			cacheblk = &dmc->cache[head + start_index];
+			if (cacheblk->cache_state == VALID) {
+				VERIFY((cacheblk - &dmc->cache[0]) ==
+				       (head + start_index));
+				*index = cacheblk - &dmc->cache[0];
+				VERIFY((dmc->cache[*index].cache_state &
+							FALLOW_DOCLEAN) == 0);
+				group_reclaim_lru_movetail(dmc, *index,
+						lru_head, lru_tail);
+				return;
+			}
+			head = cacheblk->lru_next;
+		}
+	}
+}
+
+/* Search for a slot that we can reclaim */
+void
 find_reclaim_dbn(struct cache_c *dmc, int start_index, int *index)
 {
 	int set = start_index / dmc->assoc;
@@ -945,7 +1048,11 @@ flashcache_lookup(struct cache_c *dmc, struct bio *bio, int *index)
 	}
 	if (invalid == -1) {
 		/* We didn't find an invalid entry, search for oldest valid entry */
-		find_reclaim_dbn(dmc, start_index, &oldest_clean);
+		if (dmc->request_based)
+			find_reclaim_dbn_by_lru(dmc, start_index,
+					&oldest_clean, fcg);
+		else
+			find_reclaim_dbn(dmc, start_index, &oldest_clean);
 	}
 	/* 
 	 * Cache miss :
