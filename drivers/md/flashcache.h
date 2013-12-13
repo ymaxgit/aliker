@@ -186,6 +186,7 @@ struct sequential_io {
 								
 struct flashcache_group {
 	unsigned int		weight;
+	unsigned long		blk_cnt;
 	u_int16_t 		*lru_head;
 	u_int16_t 		*lru_tail;
 	struct hlist_node 	fcg_node;
@@ -586,6 +587,8 @@ void flashcache_uncached_io_complete(struct kcached_job *job);
 void flashcache_clean_set(struct cache_c *dmc, int set);
 void flashcache_sync_all(struct cache_c *dmc);
 void flashcache_reclaim_lru_movetail(struct cache_c *dmc, int index);
+void group_reclaim_lru_movetail(struct cache_c *dmc, int index,
+			     u_int16_t *lru_head, u_int16_t *lru_tail);
 void flashcache_merge_writes(struct cache_c *dmc, 
 			     struct dbn_index_pair *writes_list, 
 			     int *nr_writes, int set);

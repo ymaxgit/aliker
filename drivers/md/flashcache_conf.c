@@ -1109,6 +1109,7 @@ init:
 	INIT_HLIST_HEAD(&dmc->fcg_list);
 	dmc->root_fcg.lru_head = NULL;
 	dmc->root_fcg.lru_tail = NULL;
+	dmc->root_fcg.blk_cnt = dmc->assoc * dmc->num_sets;
 	dmc->queue = NULL;
 	dmc->total_weight = 0;
 
