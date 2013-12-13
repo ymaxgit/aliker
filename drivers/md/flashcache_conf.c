@@ -1100,6 +1100,18 @@ init:
 	dmc->max_clean_ios_total = MAX_CLEAN_IOS_TOTAL;
 	dmc->max_clean_ios_set = MAX_CLEAN_IOS_SET;
 
+	/* CGroup association init */
+	if (NULL == ti->type->mk_rq)
+		dmc->request_based = 0;
+	else
+		dmc->request_based = 1;
+
+	INIT_HLIST_HEAD(&dmc->fcg_list);
+	dmc->root_fcg.lru_head = NULL;
+	dmc->root_fcg.lru_tail = NULL;
+	dmc->queue = NULL;
+	dmc->total_weight = 0;
+
 	/* Other sysctl defaults */
 	dmc->sysctl_io_latency_hist = 0;
 	dmc->sysctl_do_sync = 0;
@@ -1107,7 +1119,11 @@ init:
 	dmc->sysctl_pid_do_expiry = 0;
 	dmc->sysctl_max_pids = MAX_PIDS;
 	dmc->sysctl_pid_expiry_secs = PID_EXPIRY_SECS;
-	dmc->sysctl_reclaim_policy = FLASHCACHE_FIFO;
+	/* For request-based flashcache, default algo is LRU */
+	if (dmc->request_based)
+		dmc->sysctl_reclaim_policy = FLASHCACHE_LRU;
+	else
+		dmc->sysctl_reclaim_policy = FLASHCACHE_FIFO;
 	dmc->sysctl_zerostats = 0;
 	dmc->sysctl_error_inject = 0;
 	dmc->sysctl_fast_remove = 0;
@@ -1306,6 +1322,7 @@ flashcache_dtr(struct dm_target *ti)
 	int nr_queued = 0;
 
 	flashcache_dtr_procfs(dmc);
+	flashcache_release_fcgs(dmc);
 
 	if (dmc->cache_mode == FLASHCACHE_WRITE_BACK) {
 		flashcache_sync_for_remove(dmc);
@@ -1634,6 +1651,45 @@ struct kcopyd_client *flashcache_kcp_client; /* Kcopyd client for writing back d
 struct dm_io_client *flashcache_io_client; /* Client memory pool*/
 #endif
 
+void flashcache_unlink_blkgroup(struct request_queue *q,
+		struct blkio_group *blkg)
+{
+	struct flashcache_group *fcg = fcg_of_blkg(blkg);
+	struct cache_c *dmc =
+		container_of(fcg->root, struct cache_c, root_fcg);
+
+	flashcache_destroy_fcg(dmc, fcg);
+}
+
+void flashcache_update_blkgroup_wt(struct request_queue *q,
+					struct blkio_group *blkg,
+					unsigned int weight)
+{
+	struct flashcache_group *fcg = fcg_of_blkg(blkg);
+	struct cache_c *dmc;
+	struct hlist_node *pos, *n;
+	struct flashcache_group *tmp_fcg;
+	int total_weight = 0;
+
+	fcg->weight = weight;
+	if (!fcg->root)
+		return;
+
+	dmc = container_of(fcg->root, struct cache_c, root_fcg);
+	/* recalculate total weight */
+	hlist_for_each_entry_safe(tmp_fcg, pos, n, &dmc->fcg_list, fcg_node)
+		total_weight += tmp_fcg->weight;
+	dmc->total_weight = total_weight;
+}
+
+static struct blkio_policy_type blkio_policy_flashcache = {
+	.ops = {
+		.blkio_unlink_group_fn =	flashcache_unlink_blkgroup,
+		.blkio_update_group_weight_fn = flashcache_update_blkgroup_wt,
+	},
+	.plid = BLKIO_POLICY_CACHE,
+};
+
 /*
  * Initiate a cache target.
  */
@@ -1711,6 +1767,8 @@ flashcache_init(void)
 		kmalloc(sizeof(struct flashcache_control_s), GFP_KERNEL);
 	flashcache_control->synch_flags = 0;
 	register_reboot_notifier(&flashcache_notifier);
+
+	blkio_policy_register(&blkio_policy_flashcache);
 	return r;
 }
 
@@ -1721,6 +1779,8 @@ void
 flashcache_exit(void)
 {
 	struct target_type *target;
+
+	blkio_policy_unregister(&blkio_policy_flashcache);
 
 	if (request_based == 1)
 		target = &flashcache_request_based_target;

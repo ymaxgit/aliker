@@ -21,6 +21,7 @@ enum blkio_policy_id {
 	BLKIO_POLICY_PROP = 0,		/* Proportional Bandwidth division */
 	BLKIO_POLICY_THROTL,		/* Throttling */
 	BLKIO_POLICY_TPPS,
+	BLKIO_POLICY_CACHE,		/* Cache Quota */
 };
 
 /* Max limits for throttle policy */
@@ -240,8 +241,8 @@ struct blkio_policy_type {
 };
 
 /* Blkio controller policy registration */
-extern void blkio_policy_register(struct blkio_policy_type *);
-extern void blkio_policy_unregister(struct blkio_policy_type *);
+void blkio_policy_register(struct blkio_policy_type *);
+void blkio_policy_unregister(struct blkio_policy_type *);
 
 static inline char *blkg_path(struct blkio_group *blkg)
 {

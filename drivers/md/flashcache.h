@@ -31,6 +31,8 @@
 
 #ifdef __KERNEL__
 
+#include <linux/blk-cgroup.h>
+
 /* Like ASSERT() but always compiled in */
 
 #define VERIFY(x) do { \
@@ -182,6 +184,14 @@ struct sequential_io {
 							 * but small enough that searching through it isn't slow
 							 * (currently we do linear search, we could consider hashed */
 								
+struct flashcache_group {
+	unsigned int		weight;
+	u_int16_t 		*lru_head;
+	u_int16_t 		*lru_tail;
+	struct hlist_node 	fcg_node;
+	struct blkio_group 	blkg;
+	struct flashcache_group *root;
+};
 	
 /*
  * Cache context
@@ -291,6 +301,15 @@ struct cache_c {
 	struct sequential_io	seq_recent_ios[SEQUENTIAL_TRACKER_QUEUE_DEPTH];
 	struct sequential_io	*seq_io_head;
 	struct sequential_io 	*seq_io_tail;
+
+	int request_based;
+
+	/* List of flashcache groups being managed */
+	struct hlist_head fcg_list;
+
+	struct request_queue *queue;
+	struct flashcache_group root_fcg;
+	unsigned int total_weight;
 };
 
 /* kcached/pending job states */
@@ -605,6 +624,17 @@ void flashcache_module_procfs_init(void);
 void flashcache_module_procfs_releae(void);
 void flashcache_ctr_procfs(struct cache_c *dmc);
 void flashcache_dtr_procfs(struct cache_c *dmc);
+
+/* flashcache cgroup */
+struct flashcache_group *fcg_of_blkg(struct blkio_group *blkg);
+struct flashcache_group *flashcache_alloc_fcg(struct cache_c *dmc);
+
+int flashcache_init_group(struct cache_c *dmc, struct flashcache_group *fcg);
+
+void flashcache_release_fcgs(struct cache_c *dmc);
+void flashcache_destroy_fcg(struct cache_c *dmc, struct flashcache_group *fcg);
+void flashcache_init_add_fcg_lists(struct cache_c *dmc,
+		struct flashcache_group *fcg, struct blkio_cgroup *blkcg);
 
 #endif /* __KERNEL__ */
 

@@ -582,6 +582,196 @@ find_reclaim_dbn(struct cache_c *dmc, int start_index, int *index)
 	}
 }
 
+struct flashcache_group *fcg_of_blkg(struct blkio_group *blkg)
+{
+	if (blkg)
+		return container_of(blkg, struct flashcache_group, blkg);
+	return NULL;
+}
+
+/* This is a trick to init root_fcg when bio comes since
+ * dm do flashcache_ctr before allocate queue
+ */
+static void flashcache_init_root_fcg(struct cache_c *dmc,
+		struct flashcache_group *fcg)
+{
+	struct backing_dev_info *bdi = &dmc->queue->backing_dev_info;
+	unsigned int major, minor;
+
+	if (!fcg || fcg->blkg.dev)
+		return;
+	/*
+	 * Fill in device details for a group which might not have been
+	 * filled at group creation time as queue was being instantiated
+	 * and driver had not attached a device yet
+	 */
+	if (bdi->dev && dev_name(bdi->dev)) {
+		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
+		fcg->blkg.dev = MKDEV(major, minor);
+	}
+	flashcache_init_add_fcg_lists(dmc, &dmc->root_fcg, &blkio_root_cgroup);
+	fcg->root = &dmc->root_fcg;
+}
+
+static struct flashcache_group *flashcache_find_fcg(struct cache_c *dmc,
+		struct blkio_cgroup *blkcg)
+{
+	struct flashcache_group *fcg = NULL;
+
+	if (blkcg == &blkio_root_cgroup) {
+		fcg = &dmc->root_fcg;
+		flashcache_init_root_fcg(dmc, fcg);
+	} else
+		fcg = fcg_of_blkg(blkiocg_lookup_group(blkcg, dmc->queue,
+					BLKIO_POLICY_CACHE));
+	return fcg;
+}
+
+int flashcache_init_group(struct cache_c *dmc, struct flashcache_group *fcg)
+{
+	struct backing_dev_info *bdi = &dmc->queue->backing_dev_info;
+	unsigned int major, minor, set;
+	unsigned long size;
+
+	if (!fcg || fcg->blkg.dev)
+		return -1;
+
+	/*
+	 * Fill in device details for a group which might not have been
+	 * filled at group creation time as queue was being instantiated
+	 * and driver had not attached a device yet
+	 */
+	if (bdi->dev && dev_name(bdi->dev)) {
+		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
+		fcg->blkg.dev = MKDEV(major, minor);
+	}
+
+	INIT_HLIST_NODE(&fcg->fcg_node);
+	size = sizeof(u_int16_t) * dmc->num_sets;
+	fcg->lru_head = __vmalloc(size, GFP_ATOMIC, PAGE_KERNEL);
+	if (!fcg->lru_head) {
+		DPRINTK("New group lru_head allocation fail: num sets %u",
+				dmc->num_sets);
+		return -1;
+	}
+	fcg->lru_tail = __vmalloc(size, GFP_ATOMIC, PAGE_KERNEL);
+	if (!fcg->lru_tail) {
+		DPRINTK("New group lru_tail allocation fail: num sets %u",
+				dmc->num_sets);
+		if (fcg->lru_head)
+			vfree(fcg->lru_head);
+		return -1;
+	}
+	/* set lru_head/lru_tail value to FLASHCACHE_LRU_NULL */
+	for (set = 0; set < dmc->num_sets; set++) {
+		fcg->lru_head[set] = FLASHCACHE_LRU_NULL;
+		fcg->lru_tail[set] = FLASHCACHE_LRU_NULL;
+	}
+	fcg->root = &dmc->root_fcg;
+	return 0;
+}
+
+struct flashcache_group *flashcache_alloc_fcg(struct cache_c *dmc)
+{
+	struct flashcache_group *fcg = NULL;
+
+	/* allocate flashache_group */
+	fcg = kzalloc_node(sizeof(struct flashcache_group), GFP_ATOMIC,
+			dmc->queue->node);
+	if (!fcg)
+		return NULL;
+
+	if (flashcache_init_group(dmc, fcg))
+		return NULL;
+
+	return fcg;
+}
+
+void flashcache_destroy_fcg(struct cache_c *dmc, struct flashcache_group *fcg)
+{
+	/* Something wrong if we are trying to remove same group twice */
+	BUG_ON(hlist_unhashed(&fcg->fcg_node));
+
+	hlist_del_init(&fcg->fcg_node);
+	dmc->total_weight -= fcg->weight;
+
+	if (fcg != &dmc->root_fcg) {
+		vfree(fcg->lru_tail);
+		vfree(fcg->lru_head);
+		kfree(fcg);
+	}
+}
+
+void flashcache_release_fcgs(struct cache_c *dmc)
+{
+	struct hlist_node *pos, *n;
+	struct flashcache_group *fcg;
+
+	hlist_for_each_entry_safe(fcg, pos, n, &dmc->fcg_list, fcg_node) {
+		if (!blkiocg_del_blkio_group(&fcg->blkg))
+			flashcache_destroy_fcg(dmc, fcg);
+	}
+}
+
+void flashcache_init_add_fcg_lists(struct cache_c *dmc,
+		struct flashcache_group *fcg, struct blkio_cgroup *blkcg)
+{
+	blkiocg_add_blkio_group(blkcg, &fcg->blkg, dmc->queue,
+			fcg->blkg.dev, BLKIO_POLICY_CACHE);
+
+	fcg->weight = blkcg->weight;
+	dmc->total_weight += blkcg->weight;
+	hlist_add_head(&fcg->fcg_node, &dmc->fcg_list);
+}
+
+static struct flashcache_group *flashcache_get_fcg(struct cache_c *dmc)
+{
+	struct blkio_cgroup *blkcg;
+	struct flashcache_group *fcg, *__fcg;
+	struct request_queue *q = dmc->queue;
+
+	/* no finding for dead queue */
+	if (!q || unlikely(blk_queue_dead(q)))
+		return NULL;
+
+	rcu_read_lock();
+	blkcg = task_blkio_cgroup(current);
+	fcg = flashcache_find_fcg(dmc, blkcg);
+	if (fcg) {
+		rcu_read_unlock();
+		return fcg;
+	}
+	rcu_read_unlock();
+
+	fcg = flashcache_alloc_fcg(dmc);
+
+	/* Make sure @q is still alive */
+	if (unlikely(blk_queue_dead(q))) {
+		kfree(fcg);
+		return NULL;
+	}
+
+	rcu_read_lock();
+	blkcg = task_blkio_cgroup(current);
+	__fcg = flashcache_find_fcg(dmc, blkcg);
+	if (__fcg) {
+		kfree(fcg);
+		rcu_read_unlock();
+		return __fcg;
+	}
+
+	if (!fcg) {
+		fcg = &dmc->root_fcg;
+		flashcache_init_root_fcg(dmc, fcg);
+		rcu_read_unlock();
+		return fcg;
+	}
+
+	flashcache_init_add_fcg_lists(dmc, fcg, blkcg);
+	rcu_read_unlock();
+	return fcg;
+}
+
 /* 
  * dbn is the starting sector, io_size is the number of sectors.
  */
@@ -595,6 +785,9 @@ flashcache_lookup(struct cache_c *dmc, struct bio *bio, int *index)
 	unsigned long set_number = hash_block(dmc, dbn);
 	int invalid, oldest_clean = -1;
 	int start_index;
+	struct flashcache_group *fcg;
+
+	fcg = flashcache_get_fcg(dmc);
 
 	start_index = dmc->assoc * set_number;
 	DPRINTK("Cache lookup : dbn %llu(%lu), set = %d",
@@ -1813,6 +2006,7 @@ flashcache_mk_rq(struct dm_target *ti, struct request_queue *q, struct bio *bio)
 		return -EOPNOTSUPP;
 
 	VERIFY(to_sector(bio->bi_size) <= dmc->block_size);
+	dmc->queue = q;
 
 	if (bio_data_dir(bio) == READ)
 		dmc->flashcache_stats.reads++;
