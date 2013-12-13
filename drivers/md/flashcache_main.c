@@ -932,6 +932,9 @@ struct flashcache_group *flashcache_alloc_fcg(struct cache_c *dmc)
 
 void flashcache_destroy_fcg(struct cache_c *dmc, struct flashcache_group *fcg)
 {
+	int set, start_index, head, next;
+	struct cacheblock *cacheblk;
+
 	/* Something wrong if we are trying to remove same group twice */
 	BUG_ON(hlist_unhashed(&fcg->fcg_node));
 
@@ -939,6 +942,20 @@ void flashcache_destroy_fcg(struct cache_c *dmc, struct flashcache_group *fcg)
 	dmc->total_weight -= fcg->weight;
 
 	if (fcg != &dmc->root_fcg) {
+		/* move cacheblks back to root LRUs */
+		spin_lock_irq(&dmc->cache_spin_lock);
+		for (set = 0; set < dmc->num_sets; set++) {
+			start_index = set * dmc->assoc;
+			head = fcg->lru_head[set];
+			while (head != FLASHCACHE_LRU_NULL) {
+				cacheblk = &dmc->cache[head + start_index];
+				next = cacheblk->lru_next;
+				flashcache_lru_move_to_root(dmc, fcg,
+						head + start_index);
+				head = next;
+			}
+		}
+		spin_unlock_irq(&dmc->cache_spin_lock);
 		vfree(fcg->lru_tail);
 		vfree(fcg->lru_head);
 		kfree(fcg);
