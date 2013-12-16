@@ -426,8 +426,8 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	if (err)
 		goto err2;
 
-	if (br_netpoll_info(br) && ((err = br_netpoll_enable(p))))
-		goto err3;
+	if (br_netpoll_info(br))
+		br_netpoll_enable(p);
 
 	rcu_assign_pointer(dev->br_port, p);
 
@@ -453,8 +453,6 @@ int br_add_if(struct net_bridge *br, struct net_device *dev)
 	kobject_uevent(&p->kobj, KOBJ_ADD);
 
 	return 0;
-err3:
-	sysfs_remove_link(br->ifobj, p->dev->name);
 err2:
 	br_fdb_delete_by_port(br, p, 1);
 err1:
