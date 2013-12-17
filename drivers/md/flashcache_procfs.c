@@ -831,6 +831,37 @@ static struct file_operations flashcache_stats_operations = {
 };
 
 static int 
+flashcache_blocks_show(struct seq_file *seq, void *v)
+{
+	struct cache_c *dmc = seq->private;
+	struct hlist_node *pos, *n;
+	struct flashcache_group *tmp_fcg;
+
+	seq_printf(seq, "Group\t\tWeight\t\tBlock Count\n");
+
+	spin_lock_irq(&dmc->cache_spin_lock);
+	hlist_for_each_entry_safe(tmp_fcg, pos, n, &dmc->fcg_list, fcg_node) {
+		seq_printf(seq, "%s\t\t%d\t\t%lu\n", tmp_fcg->blkg.path,
+				tmp_fcg->weight, tmp_fcg->blk_cnt);
+	}
+	spin_unlock_irq(&dmc->cache_spin_lock);
+	return 0;
+}
+
+static int
+flashcache_blocks_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, &flashcache_blocks_show, PDE(inode)->data);
+}
+
+static const struct file_operations flashcache_blocks_operations = {
+	.open		= flashcache_blocks_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int
 flashcache_errors_show(struct seq_file *seq, void *v)
 {
 	struct cache_c *dmc = seq->private;
@@ -1036,6 +1067,14 @@ flashcache_ctr_procfs(struct cache_c *dmc)
 	}
 	kfree(s);
 
+	s = flashcache_cons_procfs_cachename(dmc, "flashcache_blocks");
+	entry = create_proc_entry(s, 0, NULL);
+	if (entry) {
+		entry->proc_fops =  &flashcache_blocks_operations;
+		entry->data = dmc;
+	}
+	kfree(s);
+
 	s = flashcache_cons_procfs_cachename(dmc, "flashcache_errors");
 	entry = create_proc_entry(s, 0, NULL);
 	if (entry) {
@@ -1072,6 +1111,10 @@ flashcache_dtr_procfs(struct cache_c *dmc)
 	char *s;
 	
 	s = flashcache_cons_procfs_cachename(dmc, "flashcache_stats");
+	remove_proc_entry(s, NULL);
+	kfree(s);
+
+	s = flashcache_cons_procfs_cachename(dmc, "flashcache_blocks");
 	remove_proc_entry(s, NULL);
 	kfree(s);
 

@@ -86,6 +86,7 @@ static void flashcache_dirty_writeback(struct cache_c *dmc, int index);
 void flashcache_sync_blocks(struct cache_c *dmc);
 static void flashcache_start_uncached_io(struct cache_c *dmc,
 		struct bio *bio, int submit);
+static void find_reclaim_dbn(struct cache_c *dmc, int start_index, int *index);
 
 extern struct work_struct _kcached_wq;
 extern u_int64_t size_hist[];
@@ -501,6 +502,182 @@ hash_block(struct cache_c *dmc, sector_t dbn)
 }
 
 static void
+travel_lru(struct cache_c *dmc, sector_t dbn, int start_index, int *valid,
+		int *invalid, u_int16_t *lru_head, u_int16_t *lru_tail)
+{
+	int index = *lru_head;
+	struct cacheblock *cacheblk;
+
+	while (index != FLASHCACHE_LRU_NULL) {
+		index += start_index;
+		cacheblk = &dmc->cache[index];
+		if (dbn == cacheblk->dbn && (cacheblk->cache_state & VALID)) {
+			*valid = index;
+			if ((cacheblk->cache_state & BLOCK_IO_INPROG) == 0)
+				group_reclaim_lru_movetail(dmc, index, lru_head,
+						lru_tail);
+			flashcache_clear_fallow(dmc, index);
+			return;
+		}
+		if (*invalid == -1 && cacheblk->cache_state == INVALID) {
+			VERIFY((cacheblk->cache_state & FALLOW_DOCLEAN) == 0);
+			*invalid = index;
+		}
+		index = cacheblk->lru_next;
+	}
+}
+
+void
+flashcache_lru_move_to_root(struct cache_c *dmc, struct flashcache_group *fcg,
+		int index)
+{
+	int set = index / dmc->assoc;
+	int start_index = set * dmc->assoc;
+	int my_index = index - start_index;
+	struct cacheblock *cacheblk = &dmc->cache[index];
+
+	/* Remove from group LRU */
+	if (cacheblk->lru_prev != FLASHCACHE_LRU_NULL)
+		dmc->cache[cacheblk->lru_prev + start_index].lru_next =
+			cacheblk->lru_next;
+	else
+		fcg->lru_head[set] = cacheblk->lru_next;
+	if (cacheblk->lru_next != FLASHCACHE_LRU_NULL)
+		dmc->cache[cacheblk->lru_next + start_index].lru_prev =
+			cacheblk->lru_prev;
+	else
+		fcg->lru_tail[set] = cacheblk->lru_prev;
+
+	/* And add it to root LRU Head */
+	cacheblk->lru_next = dmc->cache_sets[set].lru_head;
+	cacheblk->lru_prev = FLASHCACHE_LRU_NULL;
+	if (dmc->cache_sets[set].lru_head == FLASHCACHE_LRU_NULL)
+		dmc->cache_sets[set].lru_tail = my_index;
+	else
+		dmc->cache[dmc->cache_sets[set].lru_head +
+			start_index].lru_prev = my_index;
+	dmc->cache_sets[set].lru_head = my_index;
+
+	/* update the blk_cnt of groups */
+	dmc->root_fcg.blk_cnt++;
+	fcg->blk_cnt--;
+}
+
+void
+flashcache_lru_move_from_root(struct cache_c *dmc, struct flashcache_group *fcg,
+		int index)
+{
+	int set = index / dmc->assoc;
+	int start_index = set * dmc->assoc;
+	int my_index = index - start_index;
+	struct cacheblock *cacheblk = &dmc->cache[index];
+
+	/* Remove from root LRU */
+	if (likely((cacheblk->lru_prev != FLASHCACHE_LRU_NULL) ||
+		   (cacheblk->lru_next != FLASHCACHE_LRU_NULL))) {
+		if (cacheblk->lru_prev != FLASHCACHE_LRU_NULL)
+			dmc->cache[cacheblk->lru_prev + start_index].lru_next =
+				cacheblk->lru_next;
+		else
+			dmc->cache_sets[set].lru_head = cacheblk->lru_next;
+		if (cacheblk->lru_next != FLASHCACHE_LRU_NULL)
+			dmc->cache[cacheblk->lru_next + start_index].lru_prev =
+				cacheblk->lru_prev;
+		else
+			dmc->cache_sets[set].lru_tail = cacheblk->lru_prev;
+	}
+	/*
+	 * If we remove the last element in LRU,
+	 * then should set LRU's head and tail to NULL.
+	 */
+	if (dmc->cache_sets[set].lru_head == dmc->cache_sets[set].lru_tail &&
+			dmc->cache_sets[set].lru_head == my_index) {
+		VERIFY(cacheblk->lru_next == FLASHCACHE_LRU_NULL);
+		VERIFY(cacheblk->lru_prev == FLASHCACHE_LRU_NULL);
+		dmc->cache_sets[set].lru_head = FLASHCACHE_LRU_NULL;
+		dmc->cache_sets[set].lru_tail = FLASHCACHE_LRU_NULL;
+	}
+	/* And add it to group LRU Tail */
+	cacheblk->lru_next = FLASHCACHE_LRU_NULL;
+	cacheblk->lru_prev = fcg->lru_tail[set];
+	if (fcg->lru_tail[set] == FLASHCACHE_LRU_NULL)
+		fcg->lru_head[set] = my_index;
+	else
+		dmc->cache[fcg->lru_tail[set] + start_index].lru_next =
+			my_index;
+	fcg->lru_tail[set] = my_index;
+
+	/* update the blk_cnt of groups */
+	dmc->root_fcg.blk_cnt--;
+	fcg->blk_cnt++;
+}
+
+/*
+ * Check whether this group has too much cacheblk, the 'delta' arg is
+ * used to avoid shaking cacheblk between root LRU and group LRU
+ */
+static inline bool
+under_group_watermark(struct cache_c *dmc, struct flashcache_group *fcg,
+		unsigned long delta)
+{
+	return fcg->blk_cnt <= (fcg->weight * dmc->assoc * dmc->num_sets /
+			dmc->total_weight) + delta;
+}
+
+static void
+find_valid_dbn_by_lru(struct cache_c *dmc, sector_t dbn, int start_index,
+		int *valid, int *invalid, struct flashcache_group *fcg)
+{
+	int set = start_index / dmc->assoc;
+	u_int16_t *lru_head, *lru_tail;
+	int root_invalid, own_invalid;
+	struct cache_set *cache_set = &dmc->cache_sets[set];
+	struct hlist_node *pos, *n;
+	struct flashcache_group *tmp_fcg;
+
+	*valid = *invalid = root_invalid = own_invalid = -1;
+	/* Search the root LRU */
+	lru_head = &cache_set->lru_head;
+	lru_tail = &cache_set->lru_tail;
+	travel_lru(dmc, dbn, start_index, valid, &root_invalid,
+			lru_head, lru_tail);
+	if (*valid != -1)
+		return;
+	/* Search all sub-group LRUs */
+	hlist_for_each_entry_safe(tmp_fcg, pos, n, &dmc->fcg_list, fcg_node) {
+		if (tmp_fcg == &dmc->root_fcg)
+			continue;
+		*valid = *invalid = -1;
+		lru_head = tmp_fcg->lru_head + set;
+		lru_tail = tmp_fcg->lru_tail + set;
+		travel_lru(dmc, dbn, start_index, valid,
+				invalid, lru_head, lru_tail);
+		if (*valid != -1)
+			return;
+		/* Found INVALID cacheblk in own LRU */
+		else if (tmp_fcg == fcg && *invalid != -1)
+			own_invalid = *invalid;
+	}
+
+	if (fcg == &dmc->root_fcg)
+		goto out;
+
+	/* Not found VALID cacheblk, so first check whether we have found
+	 * INVALID cacheblk on our own LRU
+	 */
+	if (own_invalid != -1) {
+		*invalid = own_invalid;
+		return;
+	}
+
+	/* Then check whether we could fetch cacheblk from root */
+	if (root_invalid != -1 && under_group_watermark(dmc, fcg, 0))
+		flashcache_lru_move_from_root(dmc, fcg, root_invalid);
+out:
+	*invalid = root_invalid;
+}
+
+static void
 find_valid_dbn(struct cache_c *dmc, sector_t dbn, 
 	       int start_index, int *valid, int *invalid)
 {
@@ -532,8 +709,74 @@ find_valid_dbn(struct cache_c *dmc, sector_t dbn,
 			flashcache_reclaim_lru_movetail(dmc, *invalid);
 }
 
-/* Search for a slot that we can reclaim */
+/* Search all LRUs for a slot that we can reclaim */
 static void
+find_reclaim_dbn_by_lru(struct cache_c *dmc, int start_index, int *index,
+		struct flashcache_group *fcg)
+{
+	int head;
+	int set = start_index / dmc->assoc;
+	u_int16_t *lru_head, *lru_tail;
+	struct hlist_node *pos, *n;
+	struct flashcache_group *tmp_fcg;
+	struct cacheblock *cacheblk;
+
+	/* if we can reclaim VALID block from root LRU */
+	if (!under_group_watermark(dmc, &dmc->root_fcg, 0)) {
+		find_reclaim_dbn(dmc, start_index, index);
+		if (*index != -1) {
+			if (fcg != &dmc->root_fcg &&
+					under_group_watermark(dmc, fcg, 0))
+				flashcache_lru_move_from_root(dmc, fcg, *index);
+			return;
+		}
+	}
+	/* then check all group LRUs to reclaim VALID blocks */
+	hlist_for_each_entry_safe(tmp_fcg, pos, n, &dmc->fcg_list, fcg_node) {
+		if (tmp_fcg == &dmc->root_fcg)
+			continue;
+		if (under_group_watermark(dmc, tmp_fcg, WEIGHT_DELTA))
+			continue;
+		head = tmp_fcg->lru_head[set];
+		while (head != FLASHCACHE_LRU_NULL) {
+			cacheblk = &dmc->cache[head + start_index];
+			if (cacheblk->cache_state == VALID) {
+				VERIFY((cacheblk - &dmc->cache[0]) ==
+				       (head + start_index));
+				*index = cacheblk - &dmc->cache[0];
+				VERIFY((dmc->cache[*index].cache_state &
+							FALLOW_DOCLEAN) == 0);
+				flashcache_lru_move_to_root(dmc, tmp_fcg,
+						*index);
+				break;
+			}
+			head = cacheblk->lru_next;
+		}
+	}
+	/* finally check wether we could reclaim curent group */
+	if (fcg != &dmc->root_fcg && !under_group_watermark(dmc, fcg, 0)) {
+		lru_head = fcg->lru_head + set;
+		lru_tail = fcg->lru_tail + set;
+		head = *lru_head;
+		while (head != FLASHCACHE_LRU_NULL) {
+			cacheblk = &dmc->cache[head + start_index];
+			if (cacheblk->cache_state == VALID) {
+				VERIFY((cacheblk - &dmc->cache[0]) ==
+				       (head + start_index));
+				*index = cacheblk - &dmc->cache[0];
+				VERIFY((dmc->cache[*index].cache_state &
+							FALLOW_DOCLEAN) == 0);
+				group_reclaim_lru_movetail(dmc, *index,
+						lru_head, lru_tail);
+				return;
+			}
+			head = cacheblk->lru_next;
+		}
+	}
+}
+
+/* Search for a slot that we can reclaim */
+void
 find_reclaim_dbn(struct cache_c *dmc, int start_index, int *index)
 {
 	int set = start_index / dmc->assoc;
@@ -582,6 +825,213 @@ find_reclaim_dbn(struct cache_c *dmc, int start_index, int *index)
 	}
 }
 
+struct flashcache_group *fcg_of_blkg(struct blkio_group *blkg)
+{
+	if (blkg)
+		return container_of(blkg, struct flashcache_group, blkg);
+	return NULL;
+}
+
+/* This is a trick to init root_fcg when bio comes since
+ * dm do flashcache_ctr before allocate queue
+ */
+static void flashcache_init_root_fcg(struct cache_c *dmc,
+		struct flashcache_group *fcg)
+{
+	struct backing_dev_info *bdi = &dmc->queue->backing_dev_info;
+	unsigned int major, minor;
+
+	if (!fcg || fcg->blkg.dev)
+		return;
+	/*
+	 * Fill in device details for a group which might not have been
+	 * filled at group creation time as queue was being instantiated
+	 * and driver had not attached a device yet
+	 */
+	if (bdi->dev && dev_name(bdi->dev)) {
+		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
+		fcg->blkg.dev = MKDEV(major, minor);
+	}
+	flashcache_init_add_fcg_lists(dmc, &dmc->root_fcg, &blkio_root_cgroup);
+	fcg->root = &dmc->root_fcg;
+}
+
+static struct flashcache_group *flashcache_find_fcg(struct cache_c *dmc,
+		struct blkio_cgroup *blkcg)
+{
+	struct flashcache_group *fcg = NULL;
+
+	if (blkcg == &blkio_root_cgroup) {
+		fcg = &dmc->root_fcg;
+		flashcache_init_root_fcg(dmc, fcg);
+	} else
+		fcg = fcg_of_blkg(blkiocg_lookup_group(blkcg, dmc->queue,
+					BLKIO_POLICY_CACHE));
+	return fcg;
+}
+
+int flashcache_init_group(struct cache_c *dmc, struct flashcache_group *fcg)
+{
+	struct backing_dev_info *bdi = &dmc->queue->backing_dev_info;
+	unsigned int major, minor, set;
+	unsigned long size;
+
+	if (!fcg || fcg->blkg.dev)
+		return -1;
+
+	/*
+	 * Fill in device details for a group which might not have been
+	 * filled at group creation time as queue was being instantiated
+	 * and driver had not attached a device yet
+	 */
+	if (bdi->dev && dev_name(bdi->dev)) {
+		sscanf(dev_name(bdi->dev), "%u:%u", &major, &minor);
+		fcg->blkg.dev = MKDEV(major, minor);
+	}
+
+	INIT_HLIST_NODE(&fcg->fcg_node);
+	size = sizeof(u_int16_t) * dmc->num_sets;
+	fcg->lru_head = __vmalloc(size, GFP_ATOMIC, PAGE_KERNEL);
+	if (!fcg->lru_head) {
+		DPRINTK("New group lru_head allocation fail: num sets %u",
+				dmc->num_sets);
+		return -1;
+	}
+	fcg->lru_tail = __vmalloc(size, GFP_ATOMIC, PAGE_KERNEL);
+	if (!fcg->lru_tail) {
+		DPRINTK("New group lru_tail allocation fail: num sets %u",
+				dmc->num_sets);
+		if (fcg->lru_head)
+			vfree(fcg->lru_head);
+		return -1;
+	}
+	/* set lru_head/lru_tail value to FLASHCACHE_LRU_NULL */
+	for (set = 0; set < dmc->num_sets; set++) {
+		fcg->lru_head[set] = FLASHCACHE_LRU_NULL;
+		fcg->lru_tail[set] = FLASHCACHE_LRU_NULL;
+	}
+	fcg->root = &dmc->root_fcg;
+	return 0;
+}
+
+struct flashcache_group *flashcache_alloc_fcg(struct cache_c *dmc)
+{
+	struct flashcache_group *fcg = NULL;
+
+	/* allocate flashache_group, the inital value of blk_cnt is zero */
+	fcg = kzalloc_node(sizeof(struct flashcache_group), GFP_ATOMIC,
+			dmc->queue->node);
+	if (!fcg)
+		return NULL;
+
+	if (flashcache_init_group(dmc, fcg))
+		return NULL;
+
+	return fcg;
+}
+
+void flashcache_destroy_fcg(struct cache_c *dmc, struct flashcache_group *fcg)
+{
+	int set, start_index, head, next;
+	struct cacheblock *cacheblk;
+
+	/* Something wrong if we are trying to remove same group twice */
+	BUG_ON(hlist_unhashed(&fcg->fcg_node));
+
+	hlist_del_init(&fcg->fcg_node);
+	dmc->total_weight -= fcg->weight;
+
+	if (fcg != &dmc->root_fcg) {
+		/* move cacheblks back to root LRUs */
+		spin_lock_irq(&dmc->cache_spin_lock);
+		for (set = 0; set < dmc->num_sets; set++) {
+			start_index = set * dmc->assoc;
+			head = fcg->lru_head[set];
+			while (head != FLASHCACHE_LRU_NULL) {
+				cacheblk = &dmc->cache[head + start_index];
+				next = cacheblk->lru_next;
+				flashcache_lru_move_to_root(dmc, fcg,
+						head + start_index);
+				head = next;
+			}
+		}
+		spin_unlock_irq(&dmc->cache_spin_lock);
+		vfree(fcg->lru_tail);
+		vfree(fcg->lru_head);
+		kfree(fcg);
+	}
+}
+
+void flashcache_release_fcgs(struct cache_c *dmc)
+{
+	struct hlist_node *pos, *n;
+	struct flashcache_group *fcg;
+
+	hlist_for_each_entry_safe(fcg, pos, n, &dmc->fcg_list, fcg_node) {
+		if (!blkiocg_del_blkio_group(&fcg->blkg))
+			flashcache_destroy_fcg(dmc, fcg);
+	}
+}
+
+void flashcache_init_add_fcg_lists(struct cache_c *dmc,
+		struct flashcache_group *fcg, struct blkio_cgroup *blkcg)
+{
+	blkiocg_add_blkio_group(blkcg, &fcg->blkg, dmc->queue,
+			fcg->blkg.dev, BLKIO_POLICY_CACHE);
+
+	fcg->weight = blkcg->weight;
+	dmc->total_weight += blkcg->weight;
+	hlist_add_head(&fcg->fcg_node, &dmc->fcg_list);
+}
+
+static struct flashcache_group *flashcache_get_fcg(struct cache_c *dmc)
+{
+	struct blkio_cgroup *blkcg;
+	struct flashcache_group *fcg, *__fcg;
+	struct request_queue *q = dmc->queue;
+
+	/* no finding for dead queue */
+	if (!q || unlikely(blk_queue_dead(q)))
+		return NULL;
+
+	rcu_read_lock();
+	blkcg = task_blkio_cgroup(current);
+	fcg = flashcache_find_fcg(dmc, blkcg);
+	if (fcg) {
+		rcu_read_unlock();
+		return fcg;
+	}
+	rcu_read_unlock();
+
+	fcg = flashcache_alloc_fcg(dmc);
+
+	/* Make sure @q is still alive */
+	if (unlikely(blk_queue_dead(q))) {
+		kfree(fcg);
+		return NULL;
+	}
+
+	rcu_read_lock();
+	blkcg = task_blkio_cgroup(current);
+	__fcg = flashcache_find_fcg(dmc, blkcg);
+	if (__fcg) {
+		kfree(fcg);
+		rcu_read_unlock();
+		return __fcg;
+	}
+
+	if (!fcg) {
+		fcg = &dmc->root_fcg;
+		flashcache_init_root_fcg(dmc, fcg);
+		rcu_read_unlock();
+		return fcg;
+	}
+
+	flashcache_init_add_fcg_lists(dmc, fcg, blkcg);
+	rcu_read_unlock();
+	return fcg;
+}
+
 /* 
  * dbn is the starting sector, io_size is the number of sectors.
  */
@@ -595,11 +1045,18 @@ flashcache_lookup(struct cache_c *dmc, struct bio *bio, int *index)
 	unsigned long set_number = hash_block(dmc, dbn);
 	int invalid, oldest_clean = -1;
 	int start_index;
+	struct flashcache_group *fcg;
+
+	fcg = flashcache_get_fcg(dmc);
 
 	start_index = dmc->assoc * set_number;
 	DPRINTK("Cache lookup : dbn %llu(%lu), set = %d",
 		dbn, io_size, set_number);
-	find_valid_dbn(dmc, dbn, start_index, index, &invalid);
+	if (dmc->request_based)
+		find_valid_dbn_by_lru(dmc, dbn, start_index, index,
+				&invalid, fcg);
+	else
+		find_valid_dbn(dmc, dbn, start_index, index, &invalid);
 	if (*index >= 0) {
 		DPRINTK("Cache lookup HIT: Block %llu(%lu): VALID index %d",
 			     dbn, io_size, *index);
@@ -608,7 +1065,11 @@ flashcache_lookup(struct cache_c *dmc, struct bio *bio, int *index)
 	}
 	if (invalid == -1) {
 		/* We didn't find an invalid entry, search for oldest valid entry */
-		find_reclaim_dbn(dmc, start_index, &oldest_clean);
+		if (dmc->request_based)
+			find_reclaim_dbn_by_lru(dmc, start_index,
+					&oldest_clean, fcg);
+		else
+			find_reclaim_dbn(dmc, start_index, &oldest_clean);
 	}
 	/* 
 	 * Cache miss :
@@ -1813,6 +2274,7 @@ flashcache_mk_rq(struct dm_target *ti, struct request_queue *q, struct bio *bio)
 		return -EOPNOTSUPP;
 
 	VERIFY(to_sector(bio->bi_size) <= dmc->block_size);
+	dmc->queue = q;
 
 	if (bio_data_dir(bio) == READ)
 		dmc->flashcache_stats.reads++;

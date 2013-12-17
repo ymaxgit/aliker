@@ -734,7 +734,7 @@ static void rq_completed(struct mapped_device *md, int rw, int run_queue)
 		wake_up(&md->wait);
 
 	if (run_queue)
-		blk_run_queue(md->queue);
+		blk_run_queue_async(md->queue);
 
 	/*
 	 * dm_put() must be at the end of this function. See the comment above

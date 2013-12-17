@@ -469,6 +469,15 @@ flashcache_reclaim_lru_movetail(struct cache_c *dmc, int index)
 		else
 			dmc->cache_sets[set].lru_tail = cacheblk->lru_prev;
 	}
+	/*
+	 * If we remove the last element in LRU,
+	 * then should set LRU's head and tail to NULL.
+	 */
+	if (dmc->cache_sets[set].lru_head == dmc->cache_sets[set].lru_tail &&
+			dmc->cache_sets[set].lru_head == my_index) {
+		dmc->cache_sets[set].lru_head = FLASHCACHE_LRU_NULL;
+		dmc->cache_sets[set].lru_tail = FLASHCACHE_LRU_NULL;
+	}
 	/* And add it to LRU Tail */
 	cacheblk->lru_next = FLASHCACHE_LRU_NULL;
 	cacheblk->lru_prev = dmc->cache_sets[set].lru_tail;
@@ -478,6 +487,49 @@ flashcache_reclaim_lru_movetail(struct cache_c *dmc, int index)
 		dmc->cache[dmc->cache_sets[set].lru_tail + start_index].lru_next = 
 			my_index;
 	dmc->cache_sets[set].lru_tail = my_index;
+}
+
+void
+group_reclaim_lru_movetail(struct cache_c *dmc, int index, u_int16_t *lru_head,
+		u_int16_t *lru_tail)
+{
+	int set = index / dmc->assoc;
+	int start_index = set * dmc->assoc;
+	int my_index = index - start_index;
+	struct cacheblock *cacheblk = &dmc->cache[index];
+
+	/* Remove from group LRU */
+	if (likely((cacheblk->lru_prev != FLASHCACHE_LRU_NULL) ||
+		   (cacheblk->lru_next != FLASHCACHE_LRU_NULL))) {
+		if (cacheblk->lru_prev != FLASHCACHE_LRU_NULL)
+			dmc->cache[cacheblk->lru_prev + start_index].lru_next =
+				cacheblk->lru_next;
+		else
+			*lru_head = cacheblk->lru_next;
+		if (cacheblk->lru_next != FLASHCACHE_LRU_NULL)
+			dmc->cache[cacheblk->lru_next + start_index].lru_prev =
+				cacheblk->lru_prev;
+		else
+			*lru_tail = cacheblk->lru_prev;
+	}
+	/*
+	 * If we remove the last element in LRU,
+	 * then should set LRU's head and tail to NULL.
+	 */
+	if (*lru_head == *lru_tail && *lru_head == my_index) {
+		VERIFY(cacheblk->lru_next == FLASHCACHE_LRU_NULL);
+		VERIFY(cacheblk->lru_prev == FLASHCACHE_LRU_NULL);
+		*lru_head = FLASHCACHE_LRU_NULL;
+		*lru_tail = FLASHCACHE_LRU_NULL;
+	}
+	/* And add it to group LRU Tail */
+	cacheblk->lru_next = FLASHCACHE_LRU_NULL;
+	cacheblk->lru_prev = *lru_tail;
+	if (*lru_tail == FLASHCACHE_LRU_NULL)
+		*lru_head = my_index;
+	else
+		dmc->cache[*lru_tail + start_index].lru_next = my_index;
+	*lru_tail = my_index;
 }
 
 static int 
