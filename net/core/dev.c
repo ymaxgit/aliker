@@ -5534,8 +5534,17 @@ int register_netdevice(struct net_device *dev)
 	BUG_ON(!net);
 
 	if (net != &init_net && strcmp(dev->name, "lo") != 0) {
-		ret = -EPERM;
-		goto out;
+		/* Gives VLAN device the green light while still prevents
+ 		 * other kinds of net devices from being created */
+
+		struct rtnl_link_ops* sys_vlan_link_ops =
+			(void*)kallsyms_lookup_name("vlan_link_ops");
+
+		/* We don't care whether 8021q loaded or not now */
+		if (!sys_vlan_link_ops || dev->rtnl_link_ops != sys_vlan_link_ops) {
+			ret = -EPERM;
+			goto out;
+		}
 	}
 
 	spin_lock_init(&dev->addr_list_lock);
