@@ -60,6 +60,7 @@
 #include <linux/ipmi.h>
 #include <linux/ipmi_smi.h>
 #include <asm/io.h>
+#define IPMI_SI_OR_MSGHANDLER
 #include "ipmi_si_sm.h"
 #include <linux/init.h>
 #include <linux/dmi.h>
@@ -84,28 +85,11 @@
 #define SI_SHORT_TIMEOUT_USEC  250 /* .25ms when the SM request a
 				      short timeout */
 
-enum si_intf_state {
-	SI_NORMAL,
-	SI_GETTING_FLAGS,
-	SI_GETTING_EVENTS,
-	SI_CLEARING_FLAGS,
-	SI_CLEARING_FLAGS_THEN_SET_IRQ,
-	SI_GETTING_MESSAGES,
-	SI_ENABLE_INTERRUPTS1,
-	SI_ENABLE_INTERRUPTS2,
-	SI_DISABLE_INTERRUPTS1,
-	SI_DISABLE_INTERRUPTS2
-	/* FIXME - add watchdog stuff. */
-};
-
 /* Some BT-specific defines we need here. */
 #define IPMI_BT_INTMASK_REG		2
 #define IPMI_BT_INTMASK_CLEAR_IRQ_BIT	2
 #define IPMI_BT_INTMASK_ENABLE_IRQ_BIT	1
 
-enum si_type {
-    SI_KCS, SI_SMIC, SI_BT
-};
 static char *si_to_str[] = { "kcs", "smic", "bt" };
 
 static char *ipmi_addr_src_to_str[] = { NULL, "hotmod", "hardcoded", "SPMI",
@@ -119,179 +103,6 @@ static struct platform_driver ipmi_driver = {
 		.name = DEVICE_NAME,
 		.bus = &platform_bus_type
 	}
-};
-
-
-/*
- * Indexes into stats[] in smi_info below.
- */
-enum si_stat_indexes {
-	/*
-	 * Number of times the driver requested a timer while an operation
-	 * was in progress.
-	 */
-	SI_STAT_short_timeouts = 0,
-
-	/*
-	 * Number of times the driver requested a timer while nothing was in
-	 * progress.
-	 */
-	SI_STAT_long_timeouts,
-
-	/* Number of times the interface was idle while being polled. */
-	SI_STAT_idles,
-
-	/* Number of interrupts the driver handled. */
-	SI_STAT_interrupts,
-
-	/* Number of time the driver got an ATTN from the hardware. */
-	SI_STAT_attentions,
-
-	/* Number of times the driver requested flags from the hardware. */
-	SI_STAT_flag_fetches,
-
-	/* Number of times the hardware didn't follow the state machine. */
-	SI_STAT_hosed_count,
-
-	/* Number of completed messages. */
-	SI_STAT_complete_transactions,
-
-	/* Number of IPMI events received from the hardware. */
-	SI_STAT_events,
-
-	/* Number of watchdog pretimeouts. */
-	SI_STAT_watchdog_pretimeouts,
-
-	/* Number of asyncronous messages received. */
-	SI_STAT_incoming_messages,
-
-
-	/* This *must* remain last, add new values above this. */
-	SI_NUM_STATS
-};
-
-#define SI_INTF_TOKEN 0x6188709B
-
-struct smi_info {
-	int		       token;
-	int                    intf_num;
-	ipmi_smi_t             intf;
-	struct si_sm_data      *si_sm;
-	struct si_sm_handlers  *handlers;
-	enum si_type           si_type;
-	spinlock_t             si_lock;
-	spinlock_t             msg_lock;
-	struct list_head       xmit_msgs;
-	struct list_head       hp_xmit_msgs;
-	struct ipmi_smi_msg    *curr_msg;
-	enum si_intf_state     si_state;
-
-	/*
-	 * Used to handle the various types of I/O that can occur with
-	 * IPMI
-	 */
-	struct si_sm_io io;
-	int (*io_setup)(struct smi_info *info);
-	void (*io_cleanup)(struct smi_info *info);
-	int (*irq_setup)(struct smi_info *info);
-	void (*irq_cleanup)(struct smi_info *info);
-	unsigned int io_size;
-	enum ipmi_addr_src addr_source; /* ACPI, PCI, SMBIOS, hardcode, etc. */
-	void (*addr_source_cleanup)(struct smi_info *info);
-	void *addr_source_data;
-
-	/*
-	 * Per-OEM handler, called from handle_flags().  Returns 1
-	 * when handle_flags() needs to be re-run or 0 indicating it
-	 * set si_state itself.
-	 */
-	int (*oem_data_avail_handler)(struct smi_info *smi_info);
-
-	/*
-	 * Flags from the last GET_MSG_FLAGS command, used when an ATTN
-	 * is set to hold the flags until we are done handling everything
-	 * from the flags.
-	 */
-#define RECEIVE_MSG_AVAIL	0x01
-#define EVENT_MSG_BUFFER_FULL	0x02
-#define WDT_PRE_TIMEOUT_INT	0x08
-#define OEM0_DATA_AVAIL     0x20
-#define OEM1_DATA_AVAIL     0x40
-#define OEM2_DATA_AVAIL     0x80
-#define OEM_DATA_AVAIL      (OEM0_DATA_AVAIL | \
-			     OEM1_DATA_AVAIL | \
-			     OEM2_DATA_AVAIL)
-	unsigned char       msg_flags;
-
-	/* Does the BMC have an event buffer? */
-	char		    has_event_buffer;
-
-	/*
-	 * If set to true, this will request events the next time the
-	 * state machine is idle.
-	 */
-	atomic_t            req_events;
-
-	/*
-	 * If true, run the state machine to completion on every send
-	 * call.  Generally used after a panic to make sure stuff goes
-	 * out.
-	 */
-	int                 run_to_completion;
-
-	/* The I/O port of an SI interface. */
-	int                 port;
-
-	/*
-	 * The space between start addresses of the two ports.  For
-	 * instance, if the first port is 0xca2 and the spacing is 4, then
-	 * the second port is 0xca6.
-	 */
-	unsigned int        spacing;
-
-	/* zero if no irq; */
-	int                 irq;
-
-	/* The timer for this si. */
-	struct timer_list   si_timer;
-
-	/* The time (in jiffies) the last timeout occurred at. */
-	unsigned long       last_timeout_jiffies;
-
-	/* Used to gracefully stop the timer without race conditions. */
-	atomic_t            stop_operation;
-
-	/*
-	 * The driver will disable interrupts when it gets into a
-	 * situation where it cannot handle messages due to lack of
-	 * memory.  Once that situation clears up, it will re-enable
-	 * interrupts.
-	 */
-	int interrupt_disabled;
-
-	/* From the get device id response... */
-	struct ipmi_device_id device_id;
-
-	/* Driver model stuff. */
-	struct device *dev;
-	struct platform_device *pdev;
-
-	/*
-	 * True if we allocated the device, false if it came from
-	 * someplace else (like PCI).
-	 */
-	int dev_registered;
-
-	/* Slave address, could be reported from DMI. */
-	unsigned char slave_addr;
-
-	/* Counters and things for the proc filesystem. */
-	atomic_t stats[SI_NUM_STATS];
-
-	struct task_struct *thread;
-
-	struct list_head link;
-	union ipmi_smi_info_union addr_info;
 };
 
 #define smi_inc_stat(smi, stat) \
@@ -1182,21 +993,6 @@ static int smi_start_processing(void       *send_info,
 			new_smi->thread = NULL;
 		}
 	}
-
-	return 0;
-}
-
-int ipmi_si_get_smi_info(void *send_info, struct ipmi_smi_info *data)
-{
-	struct smi_info *smi = send_info;
-
-	if (!smi || (smi->token != SI_INTF_TOKEN))
-		return -ENOSYS;
-
-	data->addr_src = smi->addr_source;
-	data->dev = smi->dev;
-	data->addr_info = smi->addr_info;
-	get_device(smi->dev);
 
 	return 0;
 }

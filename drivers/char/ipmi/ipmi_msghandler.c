@@ -41,6 +41,8 @@
 #include <linux/slab.h>
 #include <linux/ipmi.h>
 #include <linux/ipmi_smi.h>
+#define IPMI_SI_OR_MSGHANDLER
+#include "ipmi_si_sm.h"
 #include <linux/notifier.h>
 #include <linux/init.h>
 #include <linux/proc_fs.h>
@@ -614,6 +616,7 @@ int ipmi_smi_probe_complete_register(struct ipmi_smi_probe_complete *probe_compl
 	mutex_unlock(&smi_probe_complete_mutex);
 	return 0;
 }
+EXPORT_SYMBOL(ipmi_smi_probe_complete_register);
 
 int ipmi_smi_probe_complete_unregister(struct ipmi_smi_probe_complete *probe_complete)
 {
@@ -622,6 +625,7 @@ int ipmi_smi_probe_complete_unregister(struct ipmi_smi_probe_complete *probe_com
 	mutex_unlock(&smi_probe_complete_mutex);
 	return 0;
 }
+EXPORT_SYMBOL(ipmi_smi_probe_complete_unregister);
 
 /*
  * Must be called with smi_watchers_mutex held.
@@ -1005,7 +1009,20 @@ out_kfree:
 }
 EXPORT_SYMBOL(ipmi_create_user);
 
-extern int ipmi_si_get_smi_info(void *send_info, struct ipmi_smi_info *data);
+static int ipmi_si_get_smi_info(void *send_info, struct ipmi_smi_info *data)
+{
+	struct smi_info *smi = send_info;
+
+	if (!smi || (smi->token != SI_INTF_TOKEN))
+		return -ENOSYS;
+
+	data->addr_src = smi->addr_source;
+	data->dev = smi->dev;
+	data->addr_info = smi->addr_info;
+	get_device(smi->dev);
+
+	return 0;
+}
 
 int ipmi_get_smi_info(int if_num, struct ipmi_smi_info *data)
 {
@@ -2812,6 +2829,7 @@ void ipmi_smi_probe_complete(void)
 	}
 	mutex_unlock(&smi_probe_complete_mutex);
 }
+EXPORT_SYMBOL(ipmi_smi_probe_complete);
 
 int ipmi_register_smi(struct ipmi_smi_handlers *handlers,
 		      void		       *send_info,
