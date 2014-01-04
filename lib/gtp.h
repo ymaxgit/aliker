@@ -31,7 +31,7 @@
 #define GTP_PC_NUM		16
 #endif
 
-#define GTP_X86_NEED_ADJUST_PC(gts)	(!(gts)->step && !(gts)->hwb)
+#define GTP_X86_NEED_ADJUST_PC(gts)	(!(gts)->step && !(gts)->hwb && (gts)->tpe->type != gtp_entry_uprobe)
 #endif
 
 #ifdef CONFIG_MIPS
@@ -72,6 +72,15 @@ struct gtp_var;
 struct gtp_trace_s {
 	struct gtp_entry		*tpe;
 	struct pt_regs			*regs;
+
+#ifdef CONFIG_X86_32
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,26))
+	unsigned long			x86_32_sp;
+#else
+	long				x86_32_sp;
+#endif
+#endif
+
 	long				(*read_memory)(void *dst,
 						       void *src,
 						       size_t size);
@@ -114,6 +123,13 @@ struct gtp_trace_s {
 	   HWB point to the struct.
 	   If not, it will set to NULL.  */
 	struct gtp_hwb_s		*hwb;
+	/* hwb_current_val have the value of hwb address watch
+	   when hwb_current_val_gotten is true.  */
+	int64_t				hwb_current_val;
+	int				hwb_current_val_gotten;
+
+	/* For set $current.  */
+	struct pt_regs			*tmp_regs;
 
 	int64_t				printk_tmp;
 	unsigned int			printk_level;
