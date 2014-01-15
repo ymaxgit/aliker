@@ -73,10 +73,6 @@
 #endif
 #endif
 
-#ifdef CONFIG_LOCKDEP
-#warning Current kernel open the runtime locking correctness validator (CONFIG_LOCKDEP) that will make KGTP trace functions about locks get deadlock.  Please DO NOT trace function about locks.
-#endif
-
 #ifdef GTP_FTRACE_RING_BUFFER
 #ifndef CONFIG_RING_BUFFER
 #define CONFIG_RING_BUFFER
@@ -159,8 +155,6 @@
 #ifndef CONFIG_UPROBES
 #warning "Cannot trace user program because Linux Kernel config doesn't open UPROBES.  Please open it in 'Kernel hacking->Tracers->Enable uprobes-based dynamic events' if you need it."
 #endif
-#else
-#warning "Cannot trace user program because the Linux Kernel that older than 3.9 doesn't support UPROBES."
 #endif
 
 #ifdef USE_PROC
