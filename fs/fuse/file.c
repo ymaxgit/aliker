@@ -2131,11 +2131,17 @@ fuse_direct_IO(int rw, struct kiocb *iocb, const struct iovec *iov,
 			loff_t offset, unsigned long nr_segs)
 {
 	ssize_t ret = 0;
-	struct file *file = NULL;
+	struct file *file = iocb->ki_filp;
+	struct inode *inode;
+	loff_t i_size;
 	loff_t pos = 0;
 
-	file = iocb->ki_filp;
 	pos = offset;
+	inode = file->f_mapping->host;
+	i_size = i_size_read(inode);
+
+	if ((rw == READ) && (offset > i_size))
+		return 0;
 
 	if (rw == WRITE)
 		ret = __fuse_direct_write(file, iov, nr_segs, &pos);
