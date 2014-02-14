@@ -1611,8 +1611,18 @@ static long block_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 ssize_t blkdev_aio_read(struct kiocb *iocb, const struct iovec *iov,
 			unsigned long nr_segs, loff_t pos)
 {
+	struct file *file = iocb->ki_filp;
+	struct inode *bd_inode = file->f_mapping->host;
+	loff_t size = i_size_read(bd_inode);
 	ssize_t ret;
 	struct block_device *bdev = I_BDEV(iocb->ki_filp->f_mapping->host);
+
+	if (pos >= size)
+		return 0;
+
+	size -= pos;
+	if (size < INT_MAX)
+		nr_segs = iov_shorten((struct iovec *)iov, nr_segs, size);
 
 	percpu_down_read(&bdev->bd_block_size_semaphore);
 
