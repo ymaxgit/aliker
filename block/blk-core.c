@@ -526,6 +526,17 @@ void blk_put_queue(struct request_queue *q)
 }
 EXPORT_SYMBOL(blk_put_queue);
 
+static void blk_destory_aux(struct request_queue *q)
+{
+	struct request_queue_aux *aux;
+
+	aux = q->aux;
+	if (aux) {
+		destroy_latency_stats(aux->lstats);
+		kfree(aux);
+	}
+}
+
 /**
  * blk_cleanup_queue - shutdown a request queue
  * @q: request queue to shutdown
@@ -561,6 +572,9 @@ void blk_cleanup_queue(struct request_queue *q)
 
 	/* @q won't process any more reuqest, flush async actions */
 	blk_sync_queue(q);
+
+	if (q->aux)
+		blk_destory_aux(q);
 
 	/* @q is and will stay empty, shutdown and put */
 	blk_put_queue(q);
@@ -727,6 +741,28 @@ blk_init_allocated_queue(struct request_queue *q, request_fn_proc *rfn,
 }
 EXPORT_SYMBOL(blk_init_allocated_queue);
 
+static void blk_build_aux(struct request_queue *q)
+{
+	struct request_queue_aux *aux;
+	struct latency_stats __percpu *lstats;
+
+	lstats = create_latency_stats();
+	if (!lstats)
+		return;
+
+	aux = kzalloc(sizeof(struct request_queue_aux), GFP_KERNEL);
+	if (!aux) {
+		destroy_latency_stats(lstats);
+		return;
+	}
+
+	q->aux = aux;
+	aux->lstats = lstats;
+	aux->enable_latency = 1;
+	aux->enable_soft_latency = 1;
+	aux->enable_use_us = 0;
+}
+
 struct request_queue *
 blk_init_allocated_queue_node(struct request_queue *q, request_fn_proc *rfn,
 			      spinlock_t *lock, int node_id)
@@ -754,6 +790,8 @@ blk_init_allocated_queue_node(struct request_queue *q, request_fn_proc *rfn,
 	blk_queue_make_request(q, blk_queue_bio);
 
 	q->sg_reserved_size = INT_MAX;
+
+	blk_build_aux(q);
 
 	/*
 	 * all done
@@ -1042,6 +1080,7 @@ static struct request *get_request_wait(struct request_queue *q, int rw_flags,
 	const bool is_sync = rw_is_sync(rw_flags) != 0;
 	struct request_list *rl;
 	struct request *rq;
+	struct request_queue_aux *aux;
 
 	rl = blk_get_rl(q, bio);	/* transferred to @rq on success */
 	rq = get_request(rl, rw_flags, bio, GFP_NOIO);
@@ -1078,6 +1117,19 @@ static struct request *get_request_wait(struct request_queue *q, int rw_flags,
 		rq = get_request(rl, rw_flags, bio, GFP_NOIO);
 	};
 
+	aux = q->aux;
+	if (!aux || !aux->lstats)
+		goto out;
+
+	if (!aux->enable_soft_latency)
+		goto out;
+
+	/* put time into 'stime' */
+	if (aux->enable_use_us)
+		rq->stime = ktime_to_us(ktime_get());
+	else
+		rq->stime = jiffies;
+out:
 	return rq;
 }
 
@@ -2462,6 +2514,27 @@ EXPORT_SYMBOL_GPL(blk_unprep_request);
  */
 static void blk_finish_request(struct request *req, int error)
 {
+	struct request_queue_aux *aux;
+	unsigned long stime, now;
+
+	if (!req || !req->q || !req->stime)
+		goto next;
+
+	aux = req->q->aux;
+	if (!aux || !aux->lstats || !aux->enable_latency)
+		goto next;
+
+	if (aux->enable_use_us)
+		now = ktime_to_us(ktime_get());
+	else
+		now = jiffies;
+
+	stime = req->stime;
+	req->stime = 0;
+	update_io_latency_stats(this_cpu_ptr(aux->lstats), stime,
+			now, 0, rq_data_dir(req), aux->enable_use_us);
+
+next:
 	if (blk_rq_tagged(req))
 		blk_queue_end_tag(req->q, req);
 

@@ -19,6 +19,7 @@
 #include <linux/gfp.h>
 #include <linux/bsg.h>
 #include <linux/smp.h>
+#include <linux/io_latency.h>
 
 #include <asm/scatterlist.h>
 
@@ -196,6 +197,10 @@ struct request {
 
 	/* for bidi */
 	struct request *next_rq;
+
+	/* for io-latency use */
+	unsigned long stime;
+
 	/* For future extensions */
 	void *pad;
 };
@@ -290,6 +295,14 @@ struct queue_limits {
 #else
 	unsigned char		discard_zeroes_data;
 #endif
+};
+
+/* every request_queue has an instance of this struct */
+struct request_queue_aux {
+	struct latency_stats __percpu *lstats;
+	short enable_latency;
+	short enable_soft_latency;
+	short enable_use_us;
 };
 
 struct request_queue
@@ -422,6 +435,9 @@ struct request_queue
 #if defined(CONFIG_BLK_DEV_BSG)
 	struct bsg_class_device bsg_dev;
 #endif
+	/* io-latency stat */
+	struct request_queue_aux *aux;
+
 	/* For future extensions */
 	void	*pad;
 
@@ -451,6 +467,17 @@ struct request_queue
 	unsigned char		sgio_type;
 #endif /* __GENKSYMS__ */
 };
+
+static inline struct request_queue_aux *get_aux(void *request_queue)
+
+{
+	struct request_queue_aux *aux = NULL;
+
+	aux = (struct request_queue_aux *)
+		((struct request_queue *)request_queue)->aux;
+
+	return aux;
+}
 
 #define QUEUE_FLAG_CLUSTER	0	/* cluster several segments into 1 */
 #define QUEUE_FLAG_QUEUED	1	/* uses generic tag queueing */

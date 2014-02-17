@@ -659,7 +659,38 @@ int scsi_dispatch_cmd(struct scsi_cmnd *cmd)
 	unsigned long flags = 0;
 	unsigned long timeout;
 	int rtn = 0;
+	struct request *req;
+	struct request_queue_aux *aux;
+	unsigned long now;
+	int bytes;
 
+	req = cmd->request;
+	if (!req || !req->q)
+		goto dispatch;
+
+	aux = req->q->aux;
+	if (!aux || !aux->lstats)
+		goto dispatch;
+
+	bytes = blk_rq_bytes(req);
+	if (bytes <= 0)
+		goto dispatch;
+
+	if (aux->enable_use_us)
+		now = ktime_to_us(ktime_get());
+	else
+		now = jiffies;
+
+	if (aux->enable_soft_latency && req->stime)
+		update_io_latency_stats(this_cpu_ptr(aux->lstats),
+			req->stime, now, 1, rq_data_dir(req), aux->enable_use_us);
+
+	req->stime = now;
+	if (aux->enable_latency)
+		update_io_size_stats(this_cpu_ptr(aux->lstats),
+					bytes, rq_data_dir(req));
+
+dispatch:
 	atomic_inc(&cmd->device->iorequest_cnt);
 
 	/* check if the device is still usable */
