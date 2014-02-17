@@ -96,6 +96,9 @@ MODULE_ALIAS_SCSI_DEVICE(TYPE_RBC);
 #define SD_MINORS	0
 #endif
 
+extern void insert_iolatency_procfs(struct scsi_disk *);
+extern void delete_iolatency_procfs(struct scsi_disk *);
+
 static void sd_config_discard(struct scsi_disk *, unsigned int);
 static int  sd_revalidate_disk(struct gendisk *);
 static int  sd_probe(struct device *);
@@ -2525,6 +2528,8 @@ static int sd_probe(struct device *dev)
 
 	get_device(&sdp->sdev_gendev);
 
+	insert_iolatency_procfs(sdkp);
+
 	get_device(&sdkp->dev);	/* prevent release before async_schedule */
 	async_schedule_domain(sd_probe_async, sdkp, &scsi_sd_probe_domain);
 
@@ -2559,6 +2564,7 @@ static int sd_remove(struct device *dev)
 
 	async_synchronize_full_domain(&scsi_sd_probe_domain);
 	sdkp = dev_get_drvdata(dev);
+	delete_iolatency_procfs(sdkp);/* delete iolatency related proc entry */
 	blk_queue_prep_rq(sdkp->device->request_queue, scsi_prep_fn);
 	blk_queue_unprep_rq(sdkp->device->request_queue, NULL);
 	device_del(&sdkp->dev);

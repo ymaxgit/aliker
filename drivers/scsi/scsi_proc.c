@@ -35,12 +35,469 @@
 
 #include "scsi_priv.h"
 #include "scsi_logging.h"
+#include "sd.h"
 
 
 /* 4K page size, but our output routines, use some slack for overruns */
 #define PROC_BLOCK_SIZE (3*1024)
 
 static struct proc_dir_entry *proc_scsi;
+
+/* for io-latency */
+struct proc_entry_name {
+	struct proc_dir_entry *entry;
+	struct proc_dir_entry *parent;
+	char name[64];
+};
+static struct proc_dir_entry *proc_io_latency;
+
+#define PROC_SHOW(_name, _unit, _nr, _grain, _member)			\
+static void _name##_show(struct seq_file *seq,				\
+				struct latency_stats __percpu *lstats)	\
+{									\
+	int slot_base = 0;						\
+	int i, cpu;							\
+	unsigned long sum;						\
+									\
+	for (i = 0; i < _nr; i++) {					\
+		sum = 0;						\
+		for_each_possible_cpu(cpu)				\
+			sum += per_cpu_ptr(lstats, cpu)->_member[i];	\
+									\
+		seq_printf(seq,						\
+			"%d-%d(%s):%lu\n",				\
+			slot_base,					\
+			slot_base + _grain - 1,				\
+			_unit,						\
+			sum);						\
+		slot_base += _grain;					\
+	}								\
+}
+
+#define PROC_FOPS(_name) 						\
+static int _name##_seq_show(struct seq_file *seq, void *v)		\
+{									\
+	struct request_queue *q = seq->private;				\
+	struct request_queue_aux *aux;					\
+									\
+	if (!q)								\
+		seq_puts(seq, "none");					\
+	else {								\
+		aux = get_aux(q);					\
+		_name##_show(seq, aux->lstats);				\
+	}								\
+	return 0;							\
+}									\
+									\
+static const struct seq_operations _name##_seq_ops = {			\
+	.start  = io_latency_seq_start,					\
+	.next   = io_latency_seq_next,					\
+	.stop   = io_latency_seq_stop,					\
+	.show   = _name##_seq_show,					\
+};									\
+									\
+static int proc_##_name##_open(struct inode *inode, struct file *file)	\
+{									\
+	int res;							\
+	res = seq_open(file, &_name##_seq_ops);				\
+	if (res == 0) {							\
+		struct seq_file *m = file->private_data;		\
+		m->private = PDE_DATA(inode);				\
+	}								\
+	return res;							\
+}									\
+									\
+static const struct file_operations proc_##_name##_fops = {		\
+	.owner		= THIS_MODULE,					\
+	.open		= proc_##_name##_open,				\
+	.read		= seq_read,					\
+	.llseek		= seq_lseek,					\
+	.release	= seq_release,					\
+}
+
+static void *PDE_DATA(const struct inode *inode)
+{
+	return container_of(inode, struct proc_inode, vfs_inode)->pde->data;
+}
+
+static void *io_latency_seq_start(struct seq_file *seq, loff_t *pos)
+{
+	return *pos ? NULL : SEQ_START_TOKEN;
+}
+
+static void *io_latency_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	return NULL;
+}
+
+static void io_latency_seq_stop(struct seq_file *seq, void *v)
+{
+}
+
+#define KB (1024)
+static void io_size_show(struct seq_file *seq,
+				struct latency_stats __percpu *lstats)
+{
+	int slot_base = 0;
+	int i, cpu;
+	unsigned long sum;
+
+	for (i = 0; i < IO_SIZE_STATS_NR; i++) {
+		sum = 0;
+		for_each_possible_cpu(cpu)
+			sum += per_cpu_ptr(lstats, cpu)->io_size_stats[i];
+
+		seq_printf(seq,
+			"%d-%d(KB):%lu\n",
+			(slot_base / KB),
+			(slot_base + IO_SIZE_STATS_GRAINSIZE - 1) / KB,
+			sum);
+		slot_base += IO_SIZE_STATS_GRAINSIZE;
+	}
+}
+
+static void io_read_size_show(struct seq_file *seq,
+				struct latency_stats __percpu *lstats)
+{
+	int slot_base = 0;
+	int i, cpu;
+	unsigned long sum;
+
+	for (i = 0; i < IO_SIZE_STATS_NR; i++) {
+		sum = 0;
+		for_each_possible_cpu(cpu)
+			sum += per_cpu_ptr(lstats, cpu)->io_read_size_stats[i];
+
+		seq_printf(seq,
+			"%d-%d(KB):%lu\n",
+			(slot_base / KB),
+			(slot_base + IO_SIZE_STATS_GRAINSIZE - 1) / KB,
+			sum);
+		slot_base += IO_SIZE_STATS_GRAINSIZE;
+	}
+}
+
+static void io_write_size_show(struct seq_file *seq,
+				struct latency_stats __percpu *lstats)
+{
+	int slot_base = 0;
+	int i, cpu;
+	unsigned long sum;
+
+	for (i = 0; i < IO_SIZE_STATS_NR; i++) {
+		sum = 0;
+		for_each_possible_cpu(cpu)
+			sum += per_cpu_ptr(lstats, cpu)->io_write_size_stats[i];
+
+		seq_printf(seq,
+			"%d-%d(KB):%lu\n",
+			(slot_base / KB),
+			(slot_base + IO_SIZE_STATS_GRAINSIZE - 1) / KB,
+			sum);
+		slot_base += IO_SIZE_STATS_GRAINSIZE;
+	}
+}
+
+PROC_SHOW(soft_io_latency_us, "us", IO_LATENCY_STATS_US_NR,
+		IO_LATENCY_STATS_US_GRAINSIZE, soft_latency_stats_us);
+PROC_SHOW(soft_io_latency_ms, "ms", IO_LATENCY_STATS_MS_NR,
+		IO_LATENCY_STATS_MS_GRAINSIZE, soft_latency_stats_ms);
+PROC_SHOW(soft_io_latency_s, "s", IO_LATENCY_STATS_S_NR,
+		IO_LATENCY_STATS_S_GRAINSIZE, soft_latency_stats_s);
+
+PROC_SHOW(soft_read_io_latency_us, "us", IO_LATENCY_STATS_US_NR,
+		IO_LATENCY_STATS_US_GRAINSIZE, soft_latency_read_stats_us);
+PROC_SHOW(soft_read_io_latency_ms, "ms", IO_LATENCY_STATS_MS_NR,
+		IO_LATENCY_STATS_MS_GRAINSIZE, soft_latency_read_stats_ms);
+PROC_SHOW(soft_read_io_latency_s, "s", IO_LATENCY_STATS_S_NR,
+		IO_LATENCY_STATS_S_GRAINSIZE, soft_latency_read_stats_s);
+
+PROC_SHOW(soft_write_io_latency_us, "us", IO_LATENCY_STATS_US_NR,
+		IO_LATENCY_STATS_US_GRAINSIZE, soft_latency_write_stats_us);
+PROC_SHOW(soft_write_io_latency_ms, "ms", IO_LATENCY_STATS_MS_NR,
+		IO_LATENCY_STATS_MS_GRAINSIZE, soft_latency_write_stats_ms);
+PROC_SHOW(soft_write_io_latency_s, "s", IO_LATENCY_STATS_S_NR,
+		IO_LATENCY_STATS_S_GRAINSIZE, soft_latency_write_stats_s);
+
+PROC_SHOW(io_latency_us, "us", IO_LATENCY_STATS_US_NR,
+		IO_LATENCY_STATS_US_GRAINSIZE, latency_stats_us);
+PROC_SHOW(io_latency_ms, "ms", IO_LATENCY_STATS_MS_NR,
+		IO_LATENCY_STATS_MS_GRAINSIZE, latency_stats_ms);
+PROC_SHOW(io_latency_s, "s", IO_LATENCY_STATS_S_NR,
+		IO_LATENCY_STATS_S_GRAINSIZE, latency_stats_s);
+
+PROC_SHOW(read_io_latency_us, "us", IO_LATENCY_STATS_US_NR,
+		IO_LATENCY_STATS_US_GRAINSIZE, latency_read_stats_us);
+PROC_SHOW(read_io_latency_ms, "ms", IO_LATENCY_STATS_MS_NR,
+		IO_LATENCY_STATS_MS_GRAINSIZE, latency_read_stats_ms);
+PROC_SHOW(read_io_latency_s, "s", IO_LATENCY_STATS_S_NR,
+		IO_LATENCY_STATS_S_GRAINSIZE, latency_read_stats_s);
+
+PROC_SHOW(write_io_latency_us, "us", IO_LATENCY_STATS_US_NR,
+		IO_LATENCY_STATS_US_GRAINSIZE, latency_write_stats_us);
+PROC_SHOW(write_io_latency_ms, "ms", IO_LATENCY_STATS_MS_NR,
+		IO_LATENCY_STATS_MS_GRAINSIZE, latency_write_stats_ms);
+PROC_SHOW(write_io_latency_s, "s", IO_LATENCY_STATS_S_NR,
+		IO_LATENCY_STATS_S_GRAINSIZE, latency_write_stats_s);
+
+PROC_FOPS(io_size);
+PROC_FOPS(io_read_size);
+PROC_FOPS(io_write_size);
+
+PROC_FOPS(soft_io_latency_us);
+PROC_FOPS(soft_io_latency_ms);
+PROC_FOPS(soft_io_latency_s);
+PROC_FOPS(soft_read_io_latency_us);
+PROC_FOPS(soft_read_io_latency_ms);
+PROC_FOPS(soft_read_io_latency_s);
+PROC_FOPS(soft_write_io_latency_us);
+PROC_FOPS(soft_write_io_latency_ms);
+PROC_FOPS(soft_write_io_latency_s);
+
+PROC_FOPS(io_latency_us);
+PROC_FOPS(io_latency_ms);
+PROC_FOPS(io_latency_s);
+PROC_FOPS(read_io_latency_us);
+PROC_FOPS(read_io_latency_ms);
+PROC_FOPS(read_io_latency_s);
+PROC_FOPS(write_io_latency_us);
+PROC_FOPS(write_io_latency_ms);
+PROC_FOPS(write_io_latency_s);
+
+#define ENABLE_ATTR_SHOW(_name)						\
+static int show_##_name(char *page, char **start, off_t offset,		\
+					int count, int *eof, void *data)\
+{									\
+	struct request_queue_aux *aux;					\
+	int res = 0;							\
+									\
+	if (!data)							\
+		goto out;						\
+	aux = get_aux(data);						\
+	if (!aux)							\
+		goto out;						\
+	if (aux->_name)							\
+		res = snprintf(page, count, "1\n");			\
+	else								\
+		res = snprintf(page, count, "0\n");			\
+out:									\
+	return res;							\
+}
+
+#define ENABLE_ATTR_STORE(_name)					\
+static int store_##_name(struct file *file, const char __user *buffer,	\
+					unsigned long count, void *data)\
+{									\
+	struct request_queue_aux *aux;					\
+	char *page = NULL;						\
+									\
+	if (count <= 0 || count > PAGE_SIZE)				\
+		goto out;						\
+	if (!data)							\
+		goto out;						\
+	aux = get_aux(data);						\
+	if (!aux)							\
+		goto out;						\
+	page = (char *)__get_free_page(GFP_KERNEL);			\
+	if (!page)							\
+		goto out;						\
+	if (copy_from_user(page, buffer, count))			\
+		goto out;						\
+	if (page[0] == '1')						\
+		aux->_name = 1;						\
+	else if (page[0] == '0')					\
+		aux->_name = 0;						\
+out:									\
+	if (page)							\
+		free_page((unsigned long)page);				\
+	return count;							\
+}
+
+static int store_enable_use_us(struct file *file, const char __user *buffer,
+					unsigned long count, void *data)
+{
+	struct request_queue_aux *aux;
+	char *page = NULL;
+	int ret = count;
+
+	if (count <= 0 || count > PAGE_SIZE)
+		goto out;
+	if (!data)
+		goto out;
+	aux = get_aux(data);
+	if (!aux)
+		goto out;
+	page = (char *)__get_free_page(GFP_KERNEL);
+	if (!page)
+		goto out;
+	if (copy_from_user(page, buffer, count))
+		goto out;
+	if (aux->enable_latency || aux->enable_soft_latency) {
+		ret = -EINVAL;
+		goto out;
+	}
+	if (page[0] == '1')
+		aux->enable_use_us = 1;
+	else if (page[0] == '0')
+		aux->enable_use_us = 0;
+out:
+	if (page)
+		free_page((unsigned long)page);
+	return ret;
+}
+
+ENABLE_ATTR_SHOW(enable_latency);
+ENABLE_ATTR_STORE(enable_latency);
+ENABLE_ATTR_SHOW(enable_soft_latency);
+ENABLE_ATTR_STORE(enable_soft_latency);
+ENABLE_ATTR_SHOW(enable_use_us);
+
+static int show_io_stats_reset(char *page, char **start, off_t offset,
+					int count, int *eof, void *data)
+{
+	return snprintf(page, count, "0\n");
+}
+
+static int store_io_stats_reset(struct file *file, const char __user *buffer,
+					unsigned long count, void *data)
+{
+	struct request_queue_aux *aux;
+
+	if (count <= 0)
+		goto out;
+
+	aux = get_aux(data);
+	if (!aux)
+		goto out;
+
+	reset_latency_stats(aux->lstats);
+
+out:
+	return count;
+}
+
+struct io_latency_proc_node {
+	char *name;
+	const struct file_operations *fops;
+};
+
+static const struct io_latency_proc_node proc_node_list[] = {
+	{ "io_latency_ms", &proc_io_latency_ms_fops},
+	{ "io_latency_s", &proc_io_latency_s_fops},
+
+	{ "read_io_latency_ms", &proc_read_io_latency_ms_fops},
+	{ "read_io_latency_s", &proc_read_io_latency_s_fops},
+
+	{ "write_io_latency_ms", &proc_write_io_latency_ms_fops},
+	{ "write_io_latency_s", &proc_write_io_latency_s_fops},
+
+	{ "soft_io_latency_ms", &proc_soft_io_latency_ms_fops},
+	{ "soft_io_latency_s", &proc_soft_io_latency_s_fops},
+
+	{ "soft_read_io_latency_ms", &proc_soft_read_io_latency_ms_fops},
+	{ "soft_read_io_latency_s", &proc_soft_read_io_latency_s_fops},
+
+	{ "soft_write_io_latency_ms", &proc_soft_write_io_latency_ms_fops},
+	{ "soft_write_io_latency_s", &proc_soft_write_io_latency_s_fops},
+
+	{ "io_size", &proc_io_size_fops},
+	{ "io_read_size", &proc_io_read_size_fops},
+	{ "io_write_size", &proc_io_write_size_fops},
+
+	{ "io_latency_us", &proc_io_latency_us_fops},
+	{ "read_io_latency_us", &proc_read_io_latency_us_fops},
+	{ "write_io_latency_us", &proc_write_io_latency_us_fops},
+	{ "soft_io_latency_us", &proc_soft_io_latency_us_fops},
+	{ "soft_read_io_latency_us", &proc_soft_read_io_latency_us_fops},
+	{ "soft_write_io_latency_us", &proc_soft_write_io_latency_us_fops},
+};
+
+#define MAX_REQUESTS		9973
+#define PROC_NUM (sizeof(proc_node_list) / sizeof(struct io_latency_proc_node))
+
+void delete_iolatency_procfs(struct scsi_disk *sd)
+{
+	int i;
+	char name[128];
+
+	for (i = 0; i < PROC_NUM; i++) {
+		sprintf(name,"%s/%s", sd->disk->disk_name, proc_node_list[i].name);
+		remove_proc_entry(name, proc_io_latency);
+	}
+
+	sprintf(name,"%s/io_stats_reset", sd->disk->disk_name);
+	remove_proc_entry(name, proc_io_latency);
+
+	sprintf(name,"%s/enable_latency", sd->disk->disk_name);
+	remove_proc_entry(name, proc_io_latency);
+
+	sprintf(name,"%s/enable_soft_latency", sd->disk->disk_name);
+	remove_proc_entry(name, proc_io_latency);
+
+	sprintf(name,"%s/enable_use_us", sd->disk->disk_name);
+	remove_proc_entry(name, proc_io_latency);
+
+	remove_proc_entry(sd->disk->disk_name, proc_io_latency);
+}
+EXPORT_SYMBOL(delete_iolatency_procfs);
+
+void insert_iolatency_procfs(struct scsi_disk *sd)
+{
+	struct proc_dir_entry *proc_node, *proc_dir;
+	int i;
+
+	proc_dir = proc_mkdir(sd->disk->disk_name, proc_io_latency);
+	if (!proc_dir)
+		goto err;
+
+	for (i = 0; i < PROC_NUM; i++) {
+		proc_node = proc_create_data(proc_node_list[i].name,
+					S_IFREG, proc_dir,
+					proc_node_list[i].fops,
+					sd->device->request_queue);
+		if (!proc_node)
+			goto err;
+	}
+	/* create io_stats_reset */
+	proc_node = proc_create_data("io_stats_reset", S_IFREG,
+				proc_dir, NULL,
+				sd->device->request_queue);
+	if (!proc_node)
+		goto err;
+	proc_node->read_proc = show_io_stats_reset;
+	proc_node->write_proc = store_io_stats_reset;
+
+	/* create enable_latency */
+	proc_node = proc_create_data("enable_latency", S_IFREG,
+				proc_dir, NULL,
+				sd->device->request_queue);
+	if (!proc_node)
+		goto err;
+	proc_node->read_proc = show_enable_latency;
+	proc_node->write_proc = store_enable_latency;
+
+	/* create enable_soft_latency */
+	proc_node = proc_create_data("enable_soft_latency", S_IFREG,
+				proc_dir, NULL,
+				sd->device->request_queue);
+	if (!proc_node)
+		goto err;
+	proc_node->read_proc = show_enable_soft_latency;
+	proc_node->write_proc = store_enable_soft_latency;
+
+	/* create enable_use_us */
+	proc_node = proc_create_data("enable_use_us", S_IFREG,
+				proc_dir, NULL,
+				sd->device->request_queue);
+	if (!proc_node)
+		goto err;
+	proc_node->read_proc = show_enable_use_us;
+	proc_node->write_proc = store_enable_use_us;
+	return;
+err:
+	delete_iolatency_procfs(sd);
+}
+EXPORT_SYMBOL(insert_iolatency_procfs);
 
 /* Protect sht->present and sht->proc_dir */
 static DEFINE_MUTEX(global_host_template_mutex);
@@ -418,6 +875,19 @@ static const struct file_operations proc_scsi_operations = {
 	.release	= single_release,
 };
 
+static void create_iolatency_procfs(void)
+{
+	proc_io_latency = proc_mkdir("io-latency", NULL);
+}
+
+static void destory_iolatency_procfs(void)
+{
+	if (proc_io_latency) {
+		remove_proc_entry("io-latency", NULL);
+		proc_io_latency = NULL;
+	}
+}
+
 /**
  * scsi_init_procfs - create scsi and scsi/scsi in procfs
  */
@@ -432,6 +902,8 @@ int __init scsi_init_procfs(void)
 	pde = proc_create("scsi/scsi", 0, NULL, &proc_scsi_operations);
 	if (!pde)
 		goto err2;
+
+	create_iolatency_procfs();
 
 	return 0;
 
@@ -448,4 +920,5 @@ void scsi_exit_procfs(void)
 {
 	remove_proc_entry("scsi/scsi", NULL);
 	remove_proc_entry("scsi", NULL);
+	destory_iolatency_procfs();
 }
