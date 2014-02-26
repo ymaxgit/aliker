@@ -1741,6 +1741,9 @@ struct sk_buff *skb_gso_segment(struct sk_buff *skb, int features)
 	__be16 type = skb->protocol;
 	int err;
 
+	if (unlikely(G_TC_FROM(skb->tc_verd) & AT_INGRESS))
+		return NULL;
+
 	skb_reset_mac_header(skb);
 	skb->mac_len = skb->network_header - skb->mac_header;
 	__skb_pull(skb, skb->mac_len);
