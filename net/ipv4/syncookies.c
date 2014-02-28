@@ -288,7 +288,6 @@ struct sock *cookie_v4_check(struct sock *sk, struct sk_buff *skb,
 	if (!req)
 		goto out;
 
-	req->friend = skb->friend;
 	ireq = inet_rsk(req);
 	treq = tcp_rsk(req);
 	treq->rcv_isn		= ntohl(th->seq) - 1;

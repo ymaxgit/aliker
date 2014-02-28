@@ -5507,7 +5507,7 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 			 * value (the listen()er's sock addr) which is used
 			 * as a place holder.
 			 */
-			(void)cmpxchg(&sk->sk_friend, NULL, skb->friend);
+			cmpxchg(&sk->sk_friend, NULL, skb->friend);
 		}
 
 		TCP_ECN_rcv_synack(tp, th);
