@@ -2316,8 +2316,12 @@ void tcp_close(struct sock *sk, long timeout)
 	 *  reader process may not have drained the data yet!
 	 */
 	while ((skb = __skb_dequeue(&sk->sk_receive_queue)) != NULL) {
-		u32 len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq -
-			  tcp_hdr(skb)->fin;
+		u32 len;
+		if (tcp_hdr(skb))
+			len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq -
+				tcp_hdr(skb)->fin;
+		else
+			len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq;
 		data_was_unread += len;
 		__kfree_skb(skb);
 	}
