@@ -653,12 +653,9 @@ static int tcp_transmit_skb(struct sock *sk, struct sk_buff *skb, int clone_it,
 	tcb = TCP_SKB_CB(skb);
 	memset(&opts, 0, sizeof(opts));
 
-	if (unlikely(tcb->flags & TCPCB_FLAG_SYN)) {
-		/* Only try to make friends if enabled */
-		if (sysctl_tcp_friends)
-			skb->friend = sk;
+	if (unlikely(tcb->flags & TCPCB_FLAG_SYN))
 		tcp_options_size = tcp_syn_options(sk, skb, &opts, &md5);
-	} else
+	else
 		tcp_options_size = tcp_established_options(sk, skb, &opts,
 							   &md5);
 	tcp_header_size = tcp_options_size + sizeof(struct tcphdr);
@@ -2296,8 +2293,10 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 	memset(&opts, 0, sizeof(opts));
 
 	/* Only try to make friends if enabled */
-	if (sysctl_tcp_friends)
+	if (sysctl_tcp_friends) {
 		skb->friend = sk;
+		atomic_add(skb->truesize, &sk->sk_wmem_alloc);
+	}
 
 #ifdef CONFIG_SYN_COOKIES
 	if (unlikely(req->cookie_ts))
@@ -2533,6 +2532,9 @@ void tcp_send_ack(struct sock *sk)
 
 	/* Send it off, this clears delayed acks for us. */
 	TCP_SKB_CB(buff)->when = tcp_time_stamp;
+
+	if (sysctl_tcp_friends)
+		buff->friend = sk;
 	tcp_transmit_skb(sk, buff, 0, GFP_ATOMIC);
 }
 

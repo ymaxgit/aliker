@@ -5500,16 +5500,6 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 		 *    state to ESTABLISHED..."
 		 */
 
-		if (skb->friend) {
-			/*
-			 * If friends haven't been made yet, our sk_friend
-			 * still == NULL, then update with the ACK's friend
-			 * value (the listen()er's sock addr) which is used
-			 * as a place holder.
-			 */
-			cmpxchg(&sk->sk_friend, NULL, skb->friend);
-		}
-
 		TCP_ECN_rcv_synack(tp, th);
 
 		tp->snd_wl1 = TCP_SKB_CB(skb)->seq;
