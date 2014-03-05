@@ -545,6 +545,7 @@ static struct scsi_cmnd *scsi_end_request(struct scsi_cmnd *cmd, int error,
 {
 	struct request_queue *q = cmd->device->request_queue;
 	struct request *req = cmd->request;
+	int ref = req->ref_count;
 
 	/*
 	 * If there are blocks left over at the end, set up the command
@@ -573,8 +574,21 @@ static struct scsi_cmnd *scsi_end_request(struct scsi_cmnd *cmd, int error,
 	 * This will goose the queue request function at the end, so we don't
 	 * need to worry about launching another command.
 	 */
-	__scsi_release_buffers(cmd, 0);
-	scsi_next_command(cmd);
+	if (ref >= 2) {
+		/* If the refcount is >=2, it means timeout shortcut path add 1
+		 * to it. In this case, we don't release request, scsi_cmnd and
+		 * other related fileds. The following scsi_run_queue() is picked
+		 * up from scsi_nexy_command().
+		 */
+		struct scsi_device *sdev = cmd->device;
+
+		get_device(&sdev->sdev_gendev);
+		scsi_run_queue(sdev->request_queue);
+		put_device(&sdev->sdev_gendev);
+	} else {
+		__scsi_release_buffers(cmd, 0);
+		scsi_next_command(cmd);
+	}
 	return NULL;
 }
 
@@ -1465,8 +1479,8 @@ static void scsi_softirq_done(struct request *rq)
 	if (disposition != SUCCESS &&
 	    time_before(cmd->jiffies_at_alloc + wait_for, jiffies)) {
 		sdev_printk(KERN_ERR, cmd->device,
-			    "timing out command, waited %lus\n",
-			    wait_for/HZ);
+			    "timing out command, waited %lus, alloctime %lu, now %lu\n",
+			    wait_for/HZ, cmd->jiffies_at_alloc, jiffies);
 		disposition = SUCCESS;
 	}
 			
