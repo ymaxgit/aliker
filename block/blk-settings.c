@@ -92,6 +92,12 @@ void blk_queue_rq_retries(struct request_queue *q, unsigned int retries)
 }
 EXPORT_SYMBOL_GPL(blk_queue_rq_retries);
 
+void blk_queue_timeout_shortcut(struct request_queue *q, unsigned int shortcut)
+{
+	q->timeout_shortcut = shortcut;
+}
+EXPORT_SYMBOL_GPL(blk_queue_timeout_shortcut);
+
 void blk_queue_rq_timed_out(struct request_queue *q, rq_timed_out_fn *fn)
 {
 	q->rq_timed_out_fn = fn;

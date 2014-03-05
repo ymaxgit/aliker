@@ -139,17 +139,18 @@ enum blk_eh_timer_return scsi_times_out(struct request *req)
 	else if (scmd->device->host->hostt->eh_timed_out)
 		rtn = scmd->device->host->hostt->eh_timed_out(scmd);
 
-#if 0
-	if (unlikely(rtn == BLK_EH_NOT_HANDLED &&
-		     !scsi_eh_scmd_add(scmd, SCSI_EH_CANCEL_CMD))) {
-		scmd->result |= DID_TIME_OUT << 16;
-		rtn = BLK_EH_HANDLED;
-	}
-#endif
-	if (rtn == BLK_EH_NOT_HANDLED) {
-		scmd->result |= DID_TIME_OUT << 16;
-		rtn = BLK_EH_HANDLED;
-		req->ref_count++;
+	if (!req->q->timeout_shortcut) {
+		if (unlikely(rtn == BLK_EH_NOT_HANDLED &&
+			!scsi_eh_scmd_add(scmd, SCSI_EH_CANCEL_CMD))) {
+			scmd->result |= DID_TIME_OUT << 16;
+			rtn = BLK_EH_HANDLED;
+		}
+	} else {
+		if (rtn == BLK_EH_NOT_HANDLED) {
+			scmd->result |= DID_TIME_OUT << 16;
+			rtn = BLK_EH_HANDLED;
+			req->ref_count++;
+		}
 	}
 
 	return rtn;

@@ -2521,6 +2521,8 @@ static int sd_probe(struct device *dev)
 	if (!sdp->request_queue->rq_retries)
 		blk_queue_rq_retries(sdp->request_queue, SD_MAX_RETRIES);
 
+	blk_queue_timeout_shortcut(sdp->request_queue, 1);
+
 	device_initialize(&sdkp->dev);
 	sdkp->dev.parent = &sdp->sdev_gendev;
 	sdkp->dev.class = &sd_disk_class;
