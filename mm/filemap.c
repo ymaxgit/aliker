@@ -1094,18 +1094,25 @@ static void do_generic_file_read(struct file *filp, loff_t *ppos,
 	pgoff_t prev_index;
 	unsigned long offset;      /* offset into pagecache page */
 	unsigned int prev_offset;
+	loff_t isize;
 	int error;
 
+	/* we need to trim desc->count to avoid expose stale data to user */
+	isize = i_size_read(inode);
+	if (*ppos + desc->count >= isize)
+		desc->count = isize - *ppos;
 	index = *ppos >> PAGE_CACHE_SHIFT;
 	prev_index = ra->prev_pos >> PAGE_CACHE_SHIFT;
 	prev_offset = ra->prev_pos & (PAGE_CACHE_SIZE-1);
 	last_index = (*ppos + desc->count + PAGE_CACHE_SIZE-1) >> PAGE_CACHE_SHIFT;
 	offset = *ppos & ~PAGE_CACHE_MASK;
 
+	if (desc->count == 0)
+		goto out;
+
 	for (;;) {
 		struct page *page;
 		pgoff_t end_index;
-		loff_t isize;
 		unsigned long nr, ret;
 		int retry_find = 0;
 
