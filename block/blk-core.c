@@ -129,6 +129,7 @@ void blk_rq_init(struct request_queue *q, struct request *rq)
 	rq->ref_count = 1;
 	rq->start_time = jiffies;
 	set_start_time_ns(rq);
+	rq->retries = q->rq_retries;
 }
 EXPORT_SYMBOL(blk_rq_init);
 

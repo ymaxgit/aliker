@@ -565,6 +565,48 @@ sdev_store_timeout (struct device *dev, struct device_attribute *attr,
 static DEVICE_ATTR(timeout, S_IRUGO | S_IWUSR, sdev_show_timeout, sdev_store_timeout);
 
 static ssize_t
+sdev_show_retries (struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct scsi_device *sdev;
+	sdev = to_scsi_device(dev);
+	return snprintf(buf, 20, "%d\n", sdev->request_queue->rq_retries);
+}
+
+static ssize_t
+sdev_store_retries (struct device *dev, struct device_attribute *attr,
+		    const char *buf, size_t count)
+{
+	struct scsi_device *sdev;
+	int retries;
+	sdev = to_scsi_device(dev);
+	sscanf (buf, "%d\n", &retries);
+	blk_queue_rq_retries(sdev->request_queue, retries);
+	return count;
+}
+static DEVICE_ATTR(retries, S_IRUGO | S_IWUSR, sdev_show_retries, sdev_store_retries);
+
+static ssize_t
+sdev_show_timeout_shortcut (struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct scsi_device *sdev;
+	sdev = to_scsi_device(dev);
+	return snprintf(buf, 20, "%d\n", sdev->request_queue->timeout_shortcut);
+}
+
+static ssize_t
+sdev_store_timeout_shortcut (struct device *dev, struct device_attribute *attr,
+		    const char *buf, size_t count)
+{
+	struct scsi_device *sdev;
+	int shortcut;
+	sdev = to_scsi_device(dev);
+	sscanf (buf, "%d\n", &shortcut);
+	blk_queue_timeout_shortcut(sdev->request_queue, shortcut);
+	return count;
+}
+static DEVICE_ATTR(timeout_shortcut, S_IRUGO | S_IWUSR, sdev_show_timeout_shortcut, sdev_store_timeout_shortcut);
+
+static ssize_t
 store_rescan_field (struct device *dev, struct device_attribute *attr,
 		    const char *buf, size_t count)
 {
@@ -728,6 +770,8 @@ static struct attribute *scsi_sdev_attrs[] = {
 	&dev_attr_delete.attr,
 	&dev_attr_state.attr,
 	&dev_attr_timeout.attr,
+	&dev_attr_retries.attr,
+	&dev_attr_timeout_shortcut.attr,
 	&dev_attr_iocounterbits.attr,
 	&dev_attr_iorequest_cnt.attr,
 	&dev_attr_iodone_cnt.attr,

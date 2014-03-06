@@ -619,7 +619,7 @@ out:
 static int scsi_setup_flush_cmnd(struct scsi_device *sdp, struct request *rq)
 {
 	rq->timeout = SD_FLUSH_TIMEOUT;
-	rq->retries = SD_MAX_RETRIES;
+	rq->retries = rq->retries;
 	rq->cmd[0] = SYNCHRONIZE_CACHE;
 	rq->cmd_len = 10;
 
@@ -905,7 +905,7 @@ static int sd_prep_fn(struct request_queue *q, struct request *rq)
 	 */
 	SCpnt->transfersize = sdp->sector_size;
 	SCpnt->underflow = this_count << 9;
-	SCpnt->allowed = SD_MAX_RETRIES;
+	SCpnt->allowed = rq->retries;
 
 	/*
 	 * This indicates that the command is ready from our end to be
@@ -2517,6 +2517,11 @@ static int sd_probe(struct device *dev)
 			blk_queue_rq_timeout(sdp->request_queue,
 					     SD_MOD_TIMEOUT);
 	}
+
+	if (!sdp->request_queue->rq_retries)
+		blk_queue_rq_retries(sdp->request_queue, SD_MAX_RETRIES);
+
+	blk_queue_timeout_shortcut(sdp->request_queue, 1);
 
 	device_initialize(&sdkp->dev);
 	sdkp->dev.parent = &sdp->sdev_gendev;
