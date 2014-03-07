@@ -828,6 +828,7 @@ static struct ctl_table ipv4_table[] = {
 		.extra1		= &zero
 	},
 	{
+		.ctl_name	= CTL_UNNUMBERED,
 		.procname       = "tcp_friends",
 		.data           = &sysctl_tcp_friends,
 		.maxlen         = sizeof(int),

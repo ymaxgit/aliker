@@ -1261,8 +1261,6 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 	tcp_rsk(req)->af_specific = &tcp_request_sock_ipv4_ops;
 #endif
 
-	req->friend = skb->friend;
-
 	tcp_clear_options(&tmp_opt);
 	tmp_opt.mss_clamp = 536;
 	tmp_opt.user_mss  = tcp_sk(sk)->rx_opt.user_mss;
@@ -1540,6 +1538,11 @@ int tcp_v4_do_rcv(struct sock *sk, struct sk_buff *skb)
 
 	if (skb->len < tcp_hdrlen(skb) || tcp_checksum_complete(skb))
 		goto csum_err;
+
+	if (sysctl_tcp_friends && skb->friend) {
+		skb->sk = skb->friend;
+		skb->destructor = sock_wfree;
+	}
 
 	if (sk->sk_state == TCP_LISTEN) {
 		struct sock *nsk = tcp_v4_hnd_req(sk, skb);

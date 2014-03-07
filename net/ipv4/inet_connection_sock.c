@@ -607,26 +607,6 @@ struct sock *inet_csk_clone(struct sock *sk, const struct request_sock *req,
 	if (newsk != NULL) {
 		struct inet_connection_sock *newicsk = inet_csk(newsk);
 
-		if (req->friend) {
-			/*
-			 * Make friends with the requestor but the ACK of
-			 * the request is already in-flight so the race is
-			 * on to make friends before the ACK is processed.
-			 * If the requestor's sk_friend value is != NULL
-			 * then the requestor has already processed the
-			 * ACK so indicate state change to wake'm up.
-			 */
-			struct sock *was;
-
-			sock_hold(req->friend);
-			newsk->sk_friend = req->friend;
-			sock_hold(newsk);
-			was = xchg(&req->friend->sk_friend, newsk);
-			/* If requester already connect()ed, maybe sleeping */
-			if (was && !sock_flag(req->friend, SOCK_DEAD))
-				sk->sk_state_change(req->friend);
-		}
-
 		newsk->sk_state = TCP_SYN_RECV;
 		newicsk->icsk_bind_hash = NULL;
 
@@ -648,6 +628,44 @@ struct sock *inet_csk_clone(struct sock *sk, const struct request_sock *req,
 }
 
 EXPORT_SYMBOL_GPL(inet_csk_clone);
+
+/*
+ * 	inet_csk_friend_clone - clone an inet socket, and lock its clone
+ * 	@sk: the socket to clone
+ * 	@req: request_sock
+ * 	@skb: who sends the request
+ * 	@priority: for allocation (%GFP_KERNEL, %GFP_ATOMIC, etc)
+ *
+ * 	Caller must unlock socket even in error path (bh_unlock_sock(newsk))
+ */
+struct sock *inet_csk_friend_clone(struct sock *sk,
+				   const struct request_sock *req,
+				   const struct sk_buff *skb,
+				   const gfp_t priority)
+{
+	struct sock *newsk = inet_csk_clone(sk, req, priority);
+
+	if (newsk) {
+		struct sock *friend = skb->friend;
+		if (friend) {
+			/*
+			 * Make friends.
+			 */
+			struct sock *was;
+
+			sock_hold(friend);
+			newsk->sk_friend = friend;
+			sock_hold(newsk);
+			was = xchg(&friend->sk_friend, newsk);
+			/* If requester already connect()ed, maybe a sleeping */
+			if (was && !sock_flag(friend, SOCK_DEAD))
+				sk->sk_state_change(friend);
+		}
+	}
+
+	return newsk;
+}
+EXPORT_SYMBOL_GPL(inet_csk_friend_clone);
 
 /*
  * At this point, there should be no process reference to this

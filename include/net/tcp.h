@@ -255,6 +255,7 @@ extern int sysctl_tcp_slow_start_after_idle;
 extern int sysctl_tcp_max_ssthresh;
 extern int sysctl_tcp_thin_linear_timeouts;
 extern int sysctl_tcp_thin_dupack;
+extern int sysctl_tcp_friends;
 
 extern atomic_t tcp_memory_allocated;
 extern struct percpu_counter tcp_sockets_allocated;
@@ -1231,7 +1232,6 @@ extern int			tcp_v4_md5_do_del(struct sock *sk,
 #else
 #define tcp_twsk_md5_key(twsk)	NULL
 #endif
-extern int sysctl_tcp_friends;
 
 extern struct tcp_md5sig_pool	**tcp_alloc_md5sig_pool(struct sock *);
 extern void			tcp_free_md5sig_pool(void);

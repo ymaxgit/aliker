@@ -676,13 +676,13 @@ static inline void tcp_mark_urg(struct tcp_sock *tp, int flags,
 static inline void tcp_push(struct sock *sk, int flags, int mss_now,
 			    int nonagle)
 {
-	struct tcp_sock *tp = tcp_sk(sk);
-
 	if (sk->sk_friend) {
 		if (skb_peek(&sk->sk_friend->sk_receive_queue))
 			sk->sk_friend->sk_data_ready(sk->sk_friend, 0);
 	} else if (tcp_send_head(sk)) {
+		struct tcp_sock *tp = tcp_sk(sk);
 		struct sk_buff *skb = tcp_write_queue_tail(sk);
+
 		if (!(flags & MSG_MORE) || forced_push(tp))
 			tcp_mark_push(tp, skb);
 		tcp_mark_urg(tp, flags, skb);
@@ -939,7 +939,6 @@ static ssize_t do_tcp_sendpages(struct sock *sk, struct page **pages, int poffse
 	int err;
 	ssize_t copied;
 	long timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
-	struct tcp_skb_cb *tcb;
 
 	/* Wait for a connection to finish. */
 	if ((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT))
@@ -960,7 +959,8 @@ static ssize_t do_tcp_sendpages(struct sock *sk, struct page **pages, int poffse
 		goto out_err;
 
 	while (psize > 0) {
-		struct sk_buff *skb = tcp_write_queue_tail(sk);
+		struct sk_buff *skb;
+		struct tcp_skb_cb *tcb;
 		struct page *page = pages[poffset / PAGE_SIZE];
 		int copy, i, can_coalesce;
 		int offset = poffset % PAGE_SIZE;
@@ -1055,10 +1055,11 @@ new_segment:
 
 		tcb->end_seq += copy;
 		skb_shinfo(skb)->gso_segs = 0;
-
 		sk->sk_wmem_queued += copy;
 		sk_mem_charge(sk, copy);
 		skb->ip_summed = CHECKSUM_PARTIAL;
+		if (copied == copy)
+			tcb->flags &= ~TCPCB_FLAG_PSH;
 
 		if (!psize)
 			goto out;
@@ -1193,7 +1194,6 @@ int tcp_sendmsg(struct kiocb *iocb, struct socket *sock, struct msghdr *msg,
 			int copy = 0;
 			int max = size_goal;
 
-			skb = tcp_write_queue_tail(sk);
 			if (friend) {
 				skb = tcp_friend_tail(friend, &copy);
 				if (copy < 0) {
@@ -1226,7 +1226,6 @@ new_segment:
 							select_size(sk),
 							sk->sk_allocation);
 				}
-
 				if (!skb)
 					goto wait_for_memory;
 
@@ -1352,6 +1351,9 @@ new_segment:
 
 			tcb->end_seq += copy;
 			skb_shinfo(skb)->gso_segs = 0;
+
+			if (copied == copy)
+				tcb->flags &= ~TCPCB_FLAG_PSH;
 
 			if (seglen == 0 && iovlen == 0)
 				goto out;
@@ -1788,7 +1790,7 @@ int tcp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 			if (copied)
 				break;
 			if (signal_pending(current)) {
-				copied = timeo ? sock_intr_errno(timeo) : -EAGAIN;
+				err = timeo ? sock_intr_errno(timeo) : -EAGAIN;
 				break;
 			}
 		}
@@ -2036,7 +2038,7 @@ do_prequeue:
 
 					/* Exception. Bailout! */
 					if (!copied)
-						copied = -EFAULT;
+						copied = err;
 					break;
 				}
 				if ((offset + used) == skb->len)
@@ -2314,8 +2316,12 @@ void tcp_close(struct sock *sk, long timeout)
 	 *  reader process may not have drained the data yet!
 	 */
 	while ((skb = __skb_dequeue(&sk->sk_receive_queue)) != NULL) {
-		u32 len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq -
-			  tcp_hdr(skb)->fin;
+		u32 len;
+		if (tcp_hdr(skb))
+			len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq -
+				tcp_hdr(skb)->fin;
+		else
+			len = TCP_SKB_CB(skb)->end_seq - TCP_SKB_CB(skb)->seq;
 		data_was_unread += len;
 		__kfree_skb(skb);
 	}
