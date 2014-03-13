@@ -44,6 +44,7 @@
 #include <net/tcp_states.h>
 #include <net/ip6_checksum.h>
 #include <net/xfrm.h>
+#include <net/inet6_hashtables.h>
 
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -133,8 +134,9 @@ static struct sock *__udp6_lib_lookup(struct net *net,
 	struct hlist_nulls_node *node;
 	unsigned short hnum = ntohs(dport);
 	unsigned int hash = udp_hashfn(net, hnum);
+	int score, badness, matches = 0, reuseport = 0;
 	struct udp_hslot *hslot = &udptable->hash[hash];
-	int score, badness;
+	unsigned int phash = 0;
 
 	rcu_read_lock();
 begin:
@@ -145,6 +147,17 @@ begin:
 		if (score > badness) {
 			result = sk;
 			badness = score;
+			reuseport = sk->sk_reuseport;
+			if (reuseport) {
+				phash = inet6_ehashfn(net, daddr, hnum,
+						     saddr, sport);
+				matches = 1;
+			}
+		} else if (score == badness && reuseport) {
+			matches++;
+			if (((u64)phash * matches) >> 32 == 0)
+				result = sk;
+			phash = inet_next_pseudo_random32(phash);
 		}
 	}
 	/*
