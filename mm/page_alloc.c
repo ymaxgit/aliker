@@ -1863,6 +1863,9 @@ __alloc_pages_direct_compact(gfp_t gfp_mask, unsigned int order,
 	struct page *page;
 	struct task_struct *p = current;
 
+	if (!sysctl_enable_compaction)
+		return NULL;
+
 	if (!order)
 		return NULL;
 

@@ -926,12 +926,13 @@ static int compact_nodes(void)
 
 /* The written value is actually unused, all memory is compacted */
 int sysctl_compact_memory;
+int sysctl_enable_compaction = 1;
 
 /* This is the entry point for compacting all nodes via /proc/sys/vm */
 int sysctl_compaction_handler(struct ctl_table *table, int write,
 			void __user *buffer, size_t *length, loff_t *ppos)
 {
-	if (write)
+	if (write && sysctl_enable_compaction)
 		return compact_nodes();
 
 	return 0;
