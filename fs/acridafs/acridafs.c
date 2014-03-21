@@ -77,6 +77,7 @@ struct acrida_bdev {
 	wait_queue_head_t       lockq;
 	spinlock_t              spin;
 	char                    *buff;
+	struct page		*page;
 };
 
 struct acrida_center_dev {
@@ -134,6 +135,7 @@ struct inode *acridafs_get_inode(struct super_block *sb, int mode, dev_t dev)
 				ab->nr_open = 0;
 				inode->i_bdev = (struct block_device *)ab;
 				ab->buff = NULL;
+				ab->page = NULL;
 			}
 			break;
 		case S_IFDIR:
@@ -232,8 +234,10 @@ unsigned int acridafs_file_poll(struct file *file, poll_table *wait)
 
 			if (!ab->buff) {
 				page = find_get_page(file->f_mapping, 0);
-				if (page)
+				if (page) {
 					ab->buff = page_address(page);
+					ab->page = page;
+				}
 			}
 
 			if (ab->buff) {
@@ -289,8 +293,10 @@ long acridafs_file_ioctl(struct file *file, unsigned int cmd,
 
 	if (!ab->buff) {
 		page = find_get_page(file->f_mapping, 0);
-		if (page)
+		if (page) {
 				ab->buff = page_address(page);
+				ab->page = page;
+		}
 	}
 	if (ab->buff)
 		lock = (size_t *)(ab->buff) + 6;
@@ -450,8 +456,10 @@ int acridafs_file_open(struct inode *inode, struct file* file)
 		ab->nr_open++;
 		if (!ab->buff) {
 			page = find_get_page(file->f_mapping, 0);
-			if (page)
+			if (page) {
 				ab->buff = page_address(page);
+				ab->page = page;
+			}
 		}
 		printk(KERN_ERR "open:%d\n", ab->nr_open);
 	}
@@ -471,6 +479,8 @@ int acridafs_file_release(struct inode *inode, struct file *file)
 		printk(KERN_ERR "release:%d\n", ab->nr_open);
 
 		if (!(ab->nr_open)) {
+			if (ab->page)
+				put_page(ab->page);
 			kfree(ab);
 			inode->i_bdev = NULL;
 		}
@@ -786,7 +796,7 @@ int kuafu_alive_flush(struct file *file, fl_owner_t id)
 {
 	struct list_head *next;
 	struct dentry *dentry;
-	struct page *page;
+	struct page *page = NULL;
 	unsigned long *buff;
 	struct acrida_bdev *ab;
 	const unsigned char *pos = NULL;
@@ -851,6 +861,8 @@ int kuafu_alive_flush(struct file *file, fl_owner_t id)
 			printk(KERN_ERR "center flush:%d\n", buff[4]);
 		}
 page_out:
+		if (page)
+			put_page(page);
 		next = next->next;
 	}
 
