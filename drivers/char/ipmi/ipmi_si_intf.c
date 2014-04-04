@@ -3264,6 +3264,9 @@ static __devinit int init_ipmi_si(void)
 		if (pci_registered)
 			pci_unregister_driver(&ipmi_pci_driver);
 #endif
+#ifdef CONFIG_PNP
+		pnp_unregister_driver(&ipmi_pnp_driver);
+#endif
 
 #ifdef CONFIG_PPC_OF
 		if (of_registered)
