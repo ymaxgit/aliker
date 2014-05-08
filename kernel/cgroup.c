@@ -648,7 +648,7 @@ static struct css_set *find_css_set(
  * Return the cgroup for "task" from the given hierarchy. Must be
  * called with cgroup_mutex held.
  */
-static struct cgroup *task_cgroup_from_root(struct task_struct *task,
+struct cgroup *task_cgroup_from_root(struct task_struct *task,
 					    struct cgroupfs_root *root)
 {
 	struct css_set *css;
@@ -678,6 +678,7 @@ static struct cgroup *task_cgroup_from_root(struct task_struct *task,
 	BUG_ON(!res);
 	return res;
 }
+EXPORT_SYMBOL_GPL(task_cgroup_from_root);
 
 /*
  * There is one global cgroup mutex. We also require taking
@@ -1222,6 +1223,7 @@ static void init_cgroup_root(struct cgroupfs_root *root)
 	root->number_of_cgroups = 1;
 	cgrp->root = root;
 	cgrp->top_cgroup = cgrp;
+	cgrp->parent = NULL;
 	init_cgroup_housekeeping(cgrp);
 }
 
@@ -4131,16 +4133,26 @@ void cgroup_fork(struct task_struct *child)
  * tasklist. No need to take any locks since no-one can
  * be operating on this task.
  */
-void cgroup_fork_callbacks(struct task_struct *child)
+int cgroup_fork_callbacks(struct task_struct *child,
+			  struct cgroup_subsys **failed_ss)
 {
+	int err;
+
 	if (need_forkexit_callback) {
 		int i;
 		for (i = 0; i < CGROUP_SUBSYS_COUNT; i++) {
 			struct cgroup_subsys *ss = subsys[i];
-			if (ss->fork)
-				ss->fork(ss, child);
+			if (ss->fork) {
+				err = ss->fork(ss, child);
+				if (err) {
+					*failed_ss = ss;
+					return err;
+				}
+			}
 		}
 	}
+
+	return 0;
 }
 
 /**
@@ -4198,7 +4210,8 @@ void cgroup_post_fork(struct task_struct *child)
  *    which wards off any cgroup_attach_task() attempts, or task is a failed
  *    fork, never visible to cgroup_attach_task.
  */
-void cgroup_exit(struct task_struct *tsk, int run_callbacks)
+void cgroup_exit(struct task_struct *tsk, int run_callbacks,
+		 struct cgroup_subsys *failed_ss)
 {
 	int i;
 	struct css_set *cg;
@@ -4228,6 +4241,10 @@ void cgroup_exit(struct task_struct *tsk, int run_callbacks)
 		 */
 		for (i = 0; i < CGROUP_SUBSYS_COUNT; i++) {
 			struct cgroup_subsys *ss = subsys[i];
+
+			if (ss == failed_ss)
+				break;
+
 			if (ss->exit) {
 				struct cgroup *old_cgrp =
 					rcu_dereference(cg->subsys[i])->cgroup;
