@@ -995,7 +995,8 @@ NORET_TYPE void do_exit(long code)
 	exit_fs(tsk);
 	check_stack_usage();
 	exit_thread();
-	cgroup_exit(tsk, 1);
+
+	cgroup_exit(tsk, 1, NULL);
 
 	if (group_dead && tsk->signal->leader)
 		disassociate_ctty(1);

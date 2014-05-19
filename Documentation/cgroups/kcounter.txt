@@ -1,0 +1,59 @@
+Kcounter cgroup subsys
+
+1. Motivation
+
+Cgroups may interfere with each other when one cgroup occupies too much certain
+resource, like the tasks spawned, the open files, the pending signals and etc,
+causing isolation failure.
+
+Rlimit is how Linux limits the usage of such resource on a per user basis. When
+it comes to cgroup, apparently rlimit is not good enough. Although with a memory
+constraint provided by kmem cgroup subsys, the resource used by a single cgroup
+can be limited however this is over kill and not accurate.
+
+Hence a kcounter cgroup subsys is created to limit resource usage on cgroup
+basis.
+
+2. Interface Design
+
+When a hierarchy is mounted with the kcounter subsystem binded, for each
+resource type (if implemented), it adds two files into the cgroups directories,
+except the root one:
+
+- kcounter.<counter>.usage contains the quantity of resource (pieces) a cgroup
+  and its children in the hierarchy are taking.
+
+- kcounter.<counter>.limit contains the maximum number of pieces that a cgroup
+  and its children are allowed to take. A specific counter implementation
+  may check this limit when a cgroup requests corresponding type of resource or
+  when some task is migrated to a cgroup.
+
+Note that the limit value can be forced below usage, in which case any new
+resource request in the cgroup will be rejected until the usage value goes below
+limit.
+
+For optimization reasons, the root directory of a hierarchy doesn't have
+counters.
+
+3. Counter Inheritance
+
+When a task is added to a cgroup, by way of a cgroup migration or a fork, it may
+increases the resource counter of that cgroup and of all its ancestors, by the
+number that how many pieces the new task carries.  Hence a cgroup is also
+subject to the limit of its ancestors.
+
+In the following hierarchy:
+
+
+             A
+             |
+             B
+           /   \
+          C     D
+
+B is carrying 1 piece, C is carrying 1 piece, and D doesn't own any.  It means
+we have usage = 1 in C and usage = 2 in B because B counts its resource and
+those of its children.
+
+Now lets set limit = 2 in B and limit = 1 in D.  When D fires a new resouce
+request, it will be refused because the limit in B has been reached already.
