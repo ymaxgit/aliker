@@ -214,6 +214,9 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 /* TCP initial congestion window */
 #define TCP_INIT_CWND		10
 
+/* Bit Flags for sysctl_tcp_fastopen */
+#define	TFO_CLIENT_ENABLE	1
+
 extern struct inet_timewait_death_row tcp_death_row;
 
 /* sysctl variables for tcp */

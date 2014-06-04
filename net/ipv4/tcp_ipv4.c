@@ -1913,6 +1913,9 @@ void tcp_v4_destroy_sock(struct sock *sk)
 		sk->sk_sndmsg_page = NULL;
 	}
 
+	/* If socket is aborted during connect operation */
+	tcp_free_fastopen_req(tp);
+
 	percpu_counter_dec(&tcp_sockets_allocated);
 }
 
