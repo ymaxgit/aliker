@@ -543,11 +543,12 @@ int inet_dgram_connect(struct socket *sock, struct sockaddr * uaddr,
 }
 EXPORT_SYMBOL(inet_dgram_connect);
 
-static long inet_wait_for_connect(struct sock *sk, long timeo)
+static long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
 {
 	DEFINE_WAIT(wait);
 
 	prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
+	sk->sk_write_pending += writebias;
 
 	/* Basic assumption: if someone sets sk->sk_err, he _must_
 	 * change state of the socket from TCP_SYN_*.
@@ -563,6 +564,7 @@ static long inet_wait_for_connect(struct sock *sk, long timeo)
 		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	}
 	finish_wait(sk->sk_sleep, &wait);
+	sk->sk_write_pending -= writebias;
 	return timeo;
 }
 
@@ -618,8 +620,12 @@ int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	timeo = sock_sndtimeo(sk, flags & O_NONBLOCK);
 
 	if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+		int writebias = (sk->sk_protocol == IPPROTO_TCP) &&
+				tcp_sk(sk)->fastopen_req &&
+				tcp_sk(sk)->fastopen_req->data ? 1 : 0;
+
 		/* Error code is set above */
-		if (!timeo || !inet_wait_for_connect(sk, timeo))
+		if (!timeo || !inet_wait_for_connect(sk, timeo, writebias))
 			goto out;
 
 		err = sock_intr_errno(timeo);

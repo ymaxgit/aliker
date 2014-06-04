@@ -1271,6 +1271,15 @@ static inline void		tcp_put_md5sig_pool(void)
 	put_cpu();
 }
 
+struct tcp_fastopen_request {
+	/* Fast Open cookie. Size 0 means a cookie request */
+	struct tcp_fastopen_cookie	cookie;
+	struct msghdr			*data;  /* data in MSG_FASTOPEN */
+	u16				copied;	/* queued in tcp_connect() */
+};
+
+void tcp_free_fastopen_req(struct tcp_sock *tp);
+
 /* write queue abstraction */
 static inline void tcp_write_queue_purge(struct sock *sk)
 {

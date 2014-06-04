@@ -313,6 +313,7 @@ struct tcp_sock {
 	u16	advmss;		/* Advertised MSS			*/
 	u8	frto_counter;	/* Number of new acks after RTO */
 	u8	nonagle;	/* Disable Nagle algorithm?             */
+	u8	syn_fastopen:1;	/* SYN includes Fast Open option */
 
 /* RTT measurement */
 	u32	srtt;		/* smoothed round trip time << 3	*/
@@ -431,6 +432,10 @@ struct tcp_sock {
 				 * receiver in Recovery. */
 	u32	prr_out;	/* Total number of pkts sent during Recovery. */
 #endif
+
+/* TCP fastopen related information */
+	struct tcp_fastopen_request *fastopen_req;
+
 };
 
 static inline struct tcp_sock *tcp_sk(const struct sock *sk)
