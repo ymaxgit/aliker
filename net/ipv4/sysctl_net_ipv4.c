@@ -240,6 +240,45 @@ static int strategy_allowed_congestion_control(ctl_table *table,
 
 }
 
+int proc_tcp_fastopen_key(ctl_table *ctl, int write, void __user *buffer,
+			  size_t *lenp, loff_t *ppos)
+{
+	ctl_table tbl = { .maxlen = (TCP_FASTOPEN_KEY_LENGTH * 2 + 10) };
+	struct tcp_fastopen_context *ctxt;
+	int ret;
+	u32  user_key[4]; /* 16 bytes, matching TCP_FASTOPEN_KEY_LENGTH */
+
+	tbl.data = kmalloc(tbl.maxlen, GFP_KERNEL);
+	if (!tbl.data)
+		return -ENOMEM;
+
+	rcu_read_lock();
+	ctxt = rcu_dereference(tcp_fastopen_ctx);
+	if (ctxt)
+		memcpy(user_key, ctxt->key, TCP_FASTOPEN_KEY_LENGTH);
+	rcu_read_unlock();
+
+	snprintf(tbl.data, tbl.maxlen, "%08x-%08x-%08x-%08x",
+		user_key[0], user_key[1], user_key[2], user_key[3]);
+	ret = proc_dostring(&tbl, write, buffer, lenp, ppos);
+
+	if (write && ret == 0) {
+		if (sscanf(tbl.data, "%x-%x-%x-%x", user_key, user_key + 1,
+			   user_key + 2, user_key + 3) != 4) {
+			ret = -EINVAL;
+			goto bad_key;
+		}
+		tcp_fastopen_reset_cipher(user_key, TCP_FASTOPEN_KEY_LENGTH);
+	}
+
+bad_key:
+	pr_debug("proc FO key set 0x%x-%x-%x-%x <- 0x%s: %u\n",
+	       user_key[0], user_key[1], user_key[2], user_key[3],
+	       (char *)tbl.data, ret);
+	kfree(tbl.data);
+	return ret;
+}
+
 static struct ctl_table ipv4_table[] = {
 	{
 		.ctl_name	= NET_IPV4_TCP_TIMESTAMPS,
@@ -419,6 +458,13 @@ static struct ctl_table ipv4_table[] = {
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= proc_dointvec,
+	},
+	{
+		.ctl_name	= NET_TCP_FASTOPEN_KEY,
+		.procname	= "tcp_fastopen_key",
+		.mode		= 0600,
+		.maxlen		= ((TCP_FASTOPEN_KEY_LENGTH * 2) + 10),
+		.proc_handler	= proc_tcp_fastopen_key,
 	},
 	{
 		.ctl_name	= NET_TCP_TW_RECYCLE,
