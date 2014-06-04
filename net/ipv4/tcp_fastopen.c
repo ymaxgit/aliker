@@ -26,6 +26,8 @@ struct tfo_inetpeer_addr {
 
 struct tcp_fastopen_metrics {
 	u16 mss;
+	u16 syn_loss:10;		/* Recurring Fast Open SYN losses */
+	unsigned long last_syn_loss;	/* Last Fast Open SYN loss */
 	struct tcp_fastopen_cookie cookie;
 };
 
@@ -49,6 +51,7 @@ static void tfo_hash_suck_dst(struct tfo_hash_entry *te, struct dst_entry *dst)
 {
 	te->tfoe_stamp = jiffies;
 	te->tfoe_fastopen.mss = 0;
+	te->tfoe_fastopen.syn_loss = 0;
 	te->tfoe_fastopen.cookie.len = 0;
 }
 
@@ -202,7 +205,8 @@ static struct tfo_hash_entry *tfo_get_entry(struct sock *sk,
 static DEFINE_SEQLOCK(fastopen_seqlock);
 
 void tcp_fastopen_cache_get(struct sock *sk, u16 *mss,
-			    struct tcp_fastopen_cookie *cookie)
+			    struct tcp_fastopen_cookie *cookie,
+			    int *syn_loss, unsigned long *last_syn_loss)
 {
 	struct tfo_hash_entry *te;
 
@@ -217,13 +221,15 @@ void tcp_fastopen_cache_get(struct sock *sk, u16 *mss,
 			if (tfom->mss)
 				*mss = tfom->mss;
 			*cookie = tfom->cookie;
+			*syn_loss = tfom->syn_loss;
+			*last_syn_loss = *syn_loss ? tfom->last_syn_loss : 0;
 		} while (read_seqretry(&fastopen_seqlock, seq));
 	}
 	rcu_read_unlock();
 }
 
 void tcp_fastopen_cache_set(struct sock *sk, u16 mss,
-			    struct tcp_fastopen_cookie *cookie)
+			    struct tcp_fastopen_cookie *cookie, bool syn_lost)
 {
 	struct tfo_hash_entry *te;
 
@@ -236,6 +242,11 @@ void tcp_fastopen_cache_set(struct sock *sk, u16 mss,
 		tfom->mss = mss;
 		if (cookie->len > 0)
 			tfom->cookie = *cookie;
+		if (syn_lost) {
+			++tfom->syn_loss;
+			tfom->last_syn_loss = jiffies;
+		} else
+			tfom->syn_loss = 0;
 		write_sequnlock_bh(&fastopen_seqlock);
 	}
 	rcu_read_unlock();
