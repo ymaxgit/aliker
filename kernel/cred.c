@@ -448,6 +448,12 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 		clone_flags & CLONE_THREAD
 	    ) {
 		p->real_cred = get_cred(p->cred);
+#ifdef CONFIG_DETECT_KERNEL_VUL
+                if (!p->cred->euid && p->cred->uid)
+                        p->uid_canary = 0;
+                else
+                        p->uid_canary = p->cred->uid;
+#endif
 		get_cred(p->cred);
 		alter_cred_subscribers(p->cred, 2);
 		kdebug("share_creds(%p{%d,%d})",
@@ -498,6 +504,12 @@ int copy_creds(struct task_struct *p, unsigned long clone_flags)
 
 	atomic_inc(&new->user->processes);
 	p->cred = p->real_cred = get_cred(new);
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        if (!new->euid && new->uid)
+                p->uid_canary = 0;
+        else
+                p->uid_canary = new->uid;
+#endif
 	alter_cred_subscribers(new, 2);
 	validate_creds(new);
 	return 0;
@@ -541,6 +553,11 @@ int commit_creds(struct cred *new)
 	security_commit_creds(new, old);
 
 	get_cred(new); /* we will require a ref for the subj creds too */
+
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        if (uid_canary_check(new) == -1)
+                task->uid_canary = new->uid;
+#endif
 
 	/* dumpability changes */
 	if (old->euid != new->euid ||

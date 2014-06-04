@@ -126,6 +126,11 @@ struct request_sock;
 #define LSM_UNSAFE_PTRACE	2
 #define LSM_UNSAFE_PTRACE_CAP	4
 
+#ifdef CONFIG_DETECT_KERNEL_VUL
+extern int detect_kernel_vul;
+int uid_canary_check(struct cred *cred);
+#endif
+
 #ifdef CONFIG_MMU
 /*
  * If a hint addr is less than mmap_min_addr change hint to be as

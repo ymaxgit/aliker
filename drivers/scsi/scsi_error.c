@@ -139,18 +139,10 @@ enum blk_eh_timer_return scsi_times_out(struct request *req)
 	else if (scmd->device->host->hostt->eh_timed_out)
 		rtn = scmd->device->host->hostt->eh_timed_out(scmd);
 
-	if (!req->q->timeout_shortcut) {
-		if (unlikely(rtn == BLK_EH_NOT_HANDLED &&
-			!scsi_eh_scmd_add(scmd, SCSI_EH_CANCEL_CMD))) {
-			scmd->result |= DID_TIME_OUT << 16;
-			rtn = BLK_EH_HANDLED;
-		}
-	} else {
-		if (rtn == BLK_EH_NOT_HANDLED) {
-			scmd->result |= DID_TIME_OUT << 16;
-			rtn = BLK_EH_HANDLED;
-			req->ref_count++;
-		}
+	if (unlikely(rtn == BLK_EH_NOT_HANDLED &&
+		     !scsi_eh_scmd_add(scmd, SCSI_EH_CANCEL_CMD))) {
+		scmd->result |= DID_TIME_OUT << 16;
+		rtn = BLK_EH_HANDLED;
 	}
 
 	return rtn;
@@ -1040,11 +1032,13 @@ static int scsi_eh_test_devices(struct list_head *cmd_list,
  *    adapter is concerned, it isn't running.
  */
 static int scsi_eh_abort_cmds(struct list_head *work_q,
-			      struct list_head *done_q)
+			      struct list_head *done_q,
+			      int *shortcut)
 {
 	struct scsi_cmnd *scmd, *next;
 	LIST_HEAD(check_list);
 	int rtn;
+	struct request *req;
 
 	list_for_each_entry_safe(scmd, next, work_q, eh_entry) {
 		if (!(scmd->eh_eflags & SCSI_EH_CANCEL_CMD))
@@ -1052,19 +1046,34 @@ static int scsi_eh_abort_cmds(struct list_head *work_q,
 		SCSI_LOG_ERROR_RECOVERY(3, printk("%s: aborting cmd:"
 						  "0x%p\n", current->comm,
 						  scmd));
-		rtn = scsi_try_to_abort_cmd(scmd);
-		if (rtn == SUCCESS || rtn == FAST_IO_FAIL) {
-			scmd->eh_eflags &= ~SCSI_EH_CANCEL_CMD;
-			if (rtn == FAST_IO_FAIL)
-				scsi_eh_finish_cmd(scmd, done_q);
-			else
-				list_move_tail(&scmd->eh_entry, &check_list);
-		} else
-			SCSI_LOG_ERROR_RECOVERY(3, printk("%s: aborting"
-							  " cmd failed:"
-							  "0x%p\n",
-							  current->comm,
-							  scmd));
+
+		req = scmd->request;
+		if (!req->q->timeout_shortcut) {
+			rtn = scsi_try_to_abort_cmd(scmd);
+			if (rtn == SUCCESS || rtn == FAST_IO_FAIL) {
+				scmd->eh_eflags &= ~SCSI_EH_CANCEL_CMD;
+				if (rtn == FAST_IO_FAIL)
+					scsi_eh_finish_cmd(scmd, done_q);
+				else
+					list_move_tail(&scmd->eh_entry, &check_list);
+			} else
+				SCSI_LOG_ERROR_RECOVERY(3, printk("%s: aborting"
+								  " cmd failed:"
+								  "0x%p\n",
+								  current->comm,
+								  scmd));
+		} else {
+			/* There is no timeout for scsi_try_to_abort_cmd(),
+			 * so just finish the request ASAP.
+			 * But the LLD driver may complete it later, which is dangerous,
+			 * so we grab ref_count once and don't release it later.
+			 */
+			scmd->result |= DID_TIME_OUT << 16;
+			scsi_eh_finish_cmd(scmd, done_q);
+			req->ref_count++;
+			*shortcut = 1;
+			printk("%s: aborting cmd by shortcut. req = %p\n", __func__, req);
+		}
 	}
 
 	return scsi_eh_test_devices(&check_list, work_q, done_q, 0);
@@ -1800,6 +1809,7 @@ EXPORT_SYMBOL(scsi_eh_flush_done_q);
 static void scsi_unjam_host(struct Scsi_Host *shost)
 {
 	unsigned long flags;
+	int shortcut = 0;
 	LIST_HEAD(eh_work_q);
 	LIST_HEAD(eh_done_q);
 
@@ -1810,8 +1820,15 @@ static void scsi_unjam_host(struct Scsi_Host *shost)
 	SCSI_LOG_ERROR_RECOVERY(1, scsi_eh_prt_fail_stats(shost, &eh_work_q));
 
 	if (!scsi_eh_get_sense(&eh_work_q, &eh_done_q))
-		if (!scsi_eh_abort_cmds(&eh_work_q, &eh_done_q))
+		if (!scsi_eh_abort_cmds(&eh_work_q, &eh_done_q, &shortcut)) {
+			if (shortcut) {
+				/* before all reset of device, target, bus etc, we finished
+				 * these request first.
+				 */
+				scsi_eh_flush_done_q(&eh_done_q);
+			}
 			scsi_eh_ready_devs(shost, &eh_work_q, &eh_done_q);
+		}
 
 	scsi_eh_flush_done_q(&eh_done_q);
 }

@@ -1795,6 +1795,7 @@ int filemap_page_mkwrite(struct vm_area_struct *vma, struct vm_fault *vmf)
 	 * see the dirty page and writeprotect it again.
 	 */
 	set_page_dirty(page);
+	wait_for_stable_page(page);
 out:
 	sb_end_pagefault(inode->i_sb);
 	return ret;
@@ -2378,7 +2379,7 @@ repeat:
 	page = find_lock_page(mapping, index);
 	if (likely(page)) {
 		trace_page_cache_acct_hit(mapping->host->i_sb, WRITE);
-		return page;
+		goto found;
 	}
 
 	page = __page_cache_alloc(mapping_gfp_mask(mapping) & ~gfp_notmask);
@@ -2393,6 +2394,8 @@ repeat:
 		page = NULL;
 		goto out;
 	}
+found:
+	wait_for_stable_page(page);
 
 out:
 	trace_page_cache_acct_miss(mapping->host->i_sb, WRITE);

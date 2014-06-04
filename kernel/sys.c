@@ -36,6 +36,7 @@
 #include <linux/cpu.h>
 #include <linux/ptrace.h>
 #include <linux/fs_struct.h>
+#include <linux/uid_canary.h>
 
 #include <linux/compat.h>
 #include <linux/syscalls.h>
@@ -644,6 +645,9 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        uid_t old_uid_canary = current->uid_canary;
+#endif
 
 	new = prepare_creds();
 	if (!new)
@@ -673,6 +677,13 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 	}
 
 	if (new->uid != old->uid) {
+#ifdef CONFIG_DETECT_KERNEL_VUL
+		if (kernel_vul_level(KERNEL_VUL_LOW)) {
+                	if (!ruid && old->uid) {
+                        	current->uid_canary = 0;
+                	}
+		}
+#endif
 		retval = set_user(new);
 		if (retval < 0)
 			goto error;
@@ -689,6 +700,9 @@ SYSCALL_DEFINE2(setreuid, uid_t, ruid, uid_t, euid)
 	return commit_creds(new);
 
 error:
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        current->uid_canary = old_uid_canary;
+#endif
 	abort_creds(new);
 	return retval;
 }
@@ -709,6 +723,9 @@ SYSCALL_DEFINE1(setuid, uid_t, uid)
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        uid_t old_uid_canary = current->uid_canary;
+#endif
 
 	new = prepare_creds();
 	if (!new)
@@ -723,6 +740,13 @@ SYSCALL_DEFINE1(setuid, uid_t, uid)
 	if (capable(CAP_SETUID)) {
 		new->suid = new->uid = uid;
 		if (uid != old->uid) {
+#ifdef CONFIG_DETECT_KERNEL_VUL
+			if (kernel_vul_level(KERNEL_VUL_LOW)) {
+                        	if (!uid && old->uid) {
+                                	current->uid_canary = 0;
+                        	}
+			}
+#endif
 			retval = set_user(new);
 			if (retval < 0)
 				goto error;
@@ -740,6 +764,9 @@ SYSCALL_DEFINE1(setuid, uid_t, uid)
 	return commit_creds(new);
 
 error:
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        current->uid_canary = old_uid_canary;
+#endif
 	abort_creds(new);
 	return retval;
 }
@@ -754,6 +781,9 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	const struct cred *old;
 	struct cred *new;
 	int retval;
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        uid_t old_uid_canary = current->uid_canary;
+#endif
 
 	new = prepare_creds();
 	if (!new)
@@ -780,6 +810,13 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	if (ruid != (uid_t) -1) {
 		new->uid = ruid;
 		if (ruid != old->uid) {
+#ifdef CONFIG_DETECT_KERNEL_VUL
+			if (kernel_vul_level(KERNEL_VUL_LOW)) {
+                        	if (!ruid && old->uid) {
+                                	current->uid_canary = 0;
+                        	}
+			}
+#endif
 			retval = set_user(new);
 			if (retval < 0)
 				goto error;
@@ -798,6 +835,9 @@ SYSCALL_DEFINE3(setresuid, uid_t, ruid, uid_t, euid, uid_t, suid)
 	return commit_creds(new);
 
 error:
+#ifdef CONFIG_DETECT_KERNEL_VUL
+        current->uid_canary = old_uid_canary;
+#endif
 	abort_creds(new);
 	return retval;
 }

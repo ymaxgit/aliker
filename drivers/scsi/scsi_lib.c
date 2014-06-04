@@ -585,6 +585,7 @@ static struct scsi_cmnd *scsi_end_request(struct scsi_cmnd *cmd, int error,
 		get_device(&sdev->sdev_gendev);
 		scsi_run_queue(sdev->request_queue);
 		put_device(&sdev->sdev_gendev);
+		printk("%s: left the req %p for shortcut\n", __func__, req);
 	} else {
 		__scsi_release_buffers(cmd, 0);
 		scsi_next_command(cmd);
@@ -1477,10 +1478,11 @@ static void scsi_softirq_done(struct request *rq)
 
 	disposition = scsi_decide_disposition(cmd);
 	if (disposition != SUCCESS &&
-	    time_before(cmd->jiffies_at_alloc + wait_for, jiffies)) {
-		sdev_printk(KERN_ERR, cmd->device,
-			    "timing out command, waited %lus, alloctime %lu, now %lu\n",
-			    wait_for/HZ, cmd->jiffies_at_alloc, jiffies);
+	    (time_before(cmd->jiffies_at_alloc + wait_for, jiffies) ||
+		++cmd->retries > cmd->allowed)) {
+		printk("timing out command, waited %lus, alloctime %lu, now %lu."
+			    "retries %d,  allowed %d.\n", wait_for/HZ,
+			     cmd->jiffies_at_alloc, jiffies, cmd->retries, cmd->allowed);
 		disposition = SUCCESS;
 	}
 			

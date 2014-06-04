@@ -25,7 +25,7 @@ static char *test_file(int size)
 	static int file_id = 0;
 
 	sprintf(buf_templ, "/tmp/test-%d\n", file_id++);
-	fd = open(buf_templ, O_CREAT|O_WRONLY|O_TRUNC);
+	fd = open(buf_templ, O_CREAT|O_WRONLY|O_TRUNC, 0666);
 
 	buf = malloc(size);
 	if (!buf) {

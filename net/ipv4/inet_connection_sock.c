@@ -59,9 +59,9 @@ int inet_csk_bind_conflict(const struct sock *sk,
 	struct sock *sk2;
 	struct hlist_node *node;
 	int reuse = sk->sk_reuse;
+	int relax = test_bit(SOCK_RELAX, &sk->sk_flags);
 	int reuseport = sk->sk_reuseport;
 	int uid = sock_i_uid((struct sock *)sk);
-
 	/*
 	 * Unlike other sk lookup places we do not check
 	 * for sk_net here, since _all_ the socks listed
@@ -85,12 +85,31 @@ int inet_csk_bind_conflict(const struct sock *sk,
 				    sk2_rcv_saddr == sk_rcv_saddr)
 					break;
 			}
+			if (!relax && reuse && sk2->sk_reuse &&
+			    sk2->sk_state != TCP_LISTEN) {
+				const __be32 sk2_rcv_saddr = inet_rcv_saddr(sk2);
+
+				if (!sk2_rcv_saddr || !inet_rcv_saddr(sk) ||
+				    sk2_rcv_saddr == inet_rcv_saddr(sk))
+					break;
+			}
 		}
 	}
 	return node != NULL;
 }
 
 EXPORT_SYMBOL_GPL(inet_csk_bind_conflict);
+
+static int inet_csk_bind_conflict_relax(struct sock *sk,
+					struct inet_bind_bucket *tb)
+{
+	int ret;
+
+	sock_set_flag(sk, SOCK_RELAX);
+	ret = inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb);
+	sock_reset_flag(sk, SOCK_RELAX);
+	return ret;
+}
 
 /* Obtain a reference to a local port for the given sock,
  * if snum is zero it means select any available local port.
@@ -133,7 +152,8 @@ again:
 					    (tb->num_owners < smallest_size || smallest_size == -1)) {
 						smallest_size = tb->num_owners;
 						smallest_rover = rover;
-						if (atomic_read(&hashinfo->bsockets) > (high - low) + 1) {
+						if (atomic_read(&hashinfo->bsockets) > (high - low) + 1 &&
+						    !inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb)) {
 							snum = smallest_rover;
 							goto tb_found;
 						}
@@ -191,7 +211,7 @@ tb_found:
 			goto success;
 		} else {
 			ret = 1;
-			if (inet_csk(sk)->icsk_af_ops->bind_conflict(sk, tb)) {
+			if (inet_csk_bind_conflict_relax(sk, tb)) {
 				if (((sk->sk_reuse &&
 				      sk->sk_state != TCP_LISTEN) ||
 				     sk->sk_reuseport) &&

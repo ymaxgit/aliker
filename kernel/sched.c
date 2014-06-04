@@ -6377,8 +6377,9 @@ static cputime_t scale_stime(u64 stime, u64 rtime, u64 total)
 
 	for (;;) {
 		/* Make sure "rtime" is the bigger of stime/rtime */
-		if (stime > rtime) 
-			swap(rtime, stime);
+		if (stime > rtime) {
+			u64 tmp = rtime; rtime = stime; stime = tmp;
+		}
 
 		/* Make sure 'total' fits in 32 bits */
 		if (total >> 32)
@@ -6408,73 +6409,48 @@ drop_precision:
 	 * followed by a 64/32->64 divide.
 	 */
 	scaled = div_u64((u64) (u32) stime * (u64) (u32) rtime, (u32)total);
-
-	return (__force cputime_t) scaled;
-}
-
-static void cputime_adjust(struct task_cputime *curr,
-			   struct cputime *prev,
-			   cputime_t *ut, cputime_t *st)
-{
-	cputime_t rtime, utime, stime;
-
-	/*
-	 * Tick based cputime accounting depend on random scheduling   
-	 * timeslices of a task to be interrupted or not by the timer. 
-	 * Depending on these circumstances, the number of these interrupts
-	 * may be over or under-optimistic, matching the real user and system                                                                  
-	 * cputime with a variable precision.                          
-	 *
-	 * Fix this by scaling these tick based values against the total
-	 * runtime accounted by the CFS scheduler.                     
-	 */
-	rtime = nsecs_to_cputime(curr->sum_exec_runtime);
-
-	/*
-	 * Update userspace visible utime/stime values only if actual execution 
-	 * time is bigger than already exported. Note that can happen, that we                                                                 
-	 * provided bigger values due to scaling inaccuracy on big numbers.     
-	 */
-	if (prev->stime + prev->utime >= rtime)                        
-		goto out;
-
-	stime = curr->stime;
-	utime = curr->utime;
-
-        if (utime == 0) {                                              
-                stime = rtime;                                         
-        } else if (stime == 0) {                                       
-                utime = rtime;
-        } else {                                                       
-                cputime_t total = stime + utime;                       
-
-                stime = scale_stime((__force u64)stime,                
-                                    (__force u64)rtime, (__force u64)total);    
-                utime = rtime - stime;
-        }
-
-        /*
-         * If the tick based count grows faster than the scheduler one,
-         * the result of the scaling may go backward.
-         * Let's enforce monotonicity.
-         */
-	prev->utime = max(prev->utime, utime);
-	prev->stime = max(prev->stime, stime);
-
-out:
-	*ut = prev->utime;
-	*st = prev->stime;
+	return (cputime_t) scaled;
 }
 
 void task_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 {
-	struct task_cputime cputime = {
-		.utime = p->utime,
-		.stime = p->stime,
-		.sum_exec_runtime = p->se.sum_exec_runtime,
-	};
+	cputime_t rtime, stime, utime, total;
 
-	cputime_adjust(&cputime, &p->prev_cputime, ut, st);
+	stime = p->stime;
+	utime = p->utime;
+	total = cputime_add(stime, utime);
+
+	/*
+	 * Use CFS's precise accounting:
+	 */
+	rtime = nsecs_to_cputime(p->se.sum_exec_runtime);
+
+	/*
+	 * Update userspace visible utime/stime values only if actual execution
+	 * time is bigger than already exported. Note that can happen, that we
+	 * provided bigger values due to scaling inaccuracy on big numbers.
+	 */
+	if (p->prev_stime + p->prev_utime >= rtime)
+		goto out;
+
+	if (utime == 0)
+		stime = rtime;
+	else if (stime == 0)
+		utime = rtime;
+	else {
+		stime = scale_stime(stime, rtime, total);
+		utime = rtime - stime;
+	}
+
+	/*
+	 * Compare with previous values, to keep monotonicity:
+	 */
+	p->prev_stime = max(p->prev_stime, stime);
+	p->prev_utime = max(p->prev_utime, utime);
+
+out:
+	*ut = p->prev_utime;
+	*st = p->prev_stime;
 }
 
 /*
@@ -6482,10 +6458,40 @@ void task_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
  */
 void thread_group_times(struct task_struct *p, cputime_t *ut, cputime_t *st)
 {
+	struct signal_struct *sig = p->signal;
 	struct task_cputime cputime;
+	cputime_t rtime, stime, utime, total;
 
 	thread_group_cputime(p, &cputime);
-	cputime_adjust(&cputime, &p->signal->prev_cputime, ut, st);
+
+	stime = cputime.stime;
+	utime = cputime.utime;
+	total = cputime_add(utime, stime);
+	rtime = nsecs_to_cputime(cputime.sum_exec_runtime);
+
+	/*
+	 * Update userspace visible utime/stime values only if actual execution
+	 * time is bigger than already exported. Note that can happen, that we
+	 * provided bigger values due to scaling inaccuracy on big numbers.
+	 */
+	if (sig->prev_stime + sig->prev_utime >= rtime)
+		goto out;
+
+	if (utime == 0)
+		stime = rtime;
+	else if (stime == 0)
+		utime = rtime;
+	else {
+		stime = scale_stime(cputime.stime, rtime, total);
+		utime = rtime - stime;
+	}
+
+	sig->prev_stime = max(sig->prev_stime, stime);
+	sig->prev_utime = max(sig->prev_utime, utime);
+
+out:
+	*ut = sig->prev_utime;
+	*st = sig->prev_stime;
 }
 #endif
 

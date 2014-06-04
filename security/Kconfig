@@ -171,6 +171,12 @@ config LSM_MMAP_MIN_ADDR
 	  this low address space will need the permission specific to the
 	  systems running LSM.
 
+config DETECT_KERNEL_VUL
+	bool "Detect kernel vulnerability attack"
+	default y
+	help
+	  Detect kernel vulnerability attack.
+
 source security/selinux/Kconfig
 source security/smack/Kconfig
 source security/tomoyo/Kconfig
