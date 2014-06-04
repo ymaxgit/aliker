@@ -105,6 +105,7 @@ enum {
 #define TCPI_OPT_SACK		2
 #define TCPI_OPT_WSCALE		4
 #define TCPI_OPT_ECN		8
+#define TCPI_OPT_SYN_DATA	32 /* SYN-ACK acked data in SYN sent or rcvd */
 
 enum tcp_ca_state
 {
@@ -321,7 +322,8 @@ struct tcp_sock {
 	u8	frto_counter;	/* Number of new acks after RTO */
 	u8	nonagle;	/* Disable Nagle algorithm?             */
 	u8	syn_data:1,	/* SYN includes data */
-		syn_fastopen:1;	/* SYN includes Fast Open option */
+		syn_fastopen:1,	/* SYN includes Fast Open option */
+		syn_data_acked:1;/* data in SYN is acked by SYN-ACK */
 
 /* RTT measurement */
 	u32	srtt;		/* smoothed round trip time << 3	*/
