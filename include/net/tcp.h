@@ -176,6 +176,11 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 #define TCPOPT_SACK             5       /* SACK Block */
 #define TCPOPT_TIMESTAMP	8	/* Better RTT estimations/PAWS */
 #define TCPOPT_MD5SIG		19	/* MD5 Signature (RFC2385) */
+#define TCPOPT_EXP		254	/* Experimental */
+/* Magic number to be after the option value for sharing TCP
+ * experimental options. See draft-ietf-tcpm-experimental-options-00.txt
+ */
+#define TCPOPT_FASTOPEN_MAGIC	0xF989
 
 /*
  *     TCP option lengths
@@ -186,6 +191,7 @@ extern void tcp_time_wait(struct sock *sk, int state, int timeo);
 #define TCPOLEN_SACK_PERM      2
 #define TCPOLEN_TIMESTAMP      10
 #define TCPOLEN_MD5SIG         18
+#define TCPOLEN_EXP_FASTOPEN_BASE  4
 
 /* But this is what stacks really send out. */
 #define TCPOLEN_TSTAMP_ALIGNED		12
@@ -225,6 +231,7 @@ extern int sysctl_tcp_retries1;
 extern int sysctl_tcp_retries2;
 extern int sysctl_tcp_orphan_retries;
 extern int sysctl_tcp_syncookies;
+extern int sysctl_tcp_fastopen;
 extern int sysctl_tcp_retrans_collapse;
 extern int sysctl_tcp_stdurg;
 extern int sysctl_tcp_rfc1337;
@@ -429,7 +436,7 @@ extern int			tcp_recvmsg(struct kiocb *iocb, struct sock *sk,
 
 extern void			tcp_parse_options(struct sk_buff *skb,
 						  struct tcp_options_received *opt_rx,
-						  int estab);
+						  int estab, struct tcp_fastopen_cookie *foc);
 
 extern u8			*tcp_parse_md5sig_option(struct tcphdr *th);
 

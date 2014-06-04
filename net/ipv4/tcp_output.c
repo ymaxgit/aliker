@@ -371,13 +371,15 @@ static inline int tcp_urg_mode(const struct tcp_sock *tp)
 #define OPTION_TS		(1 << 1)
 #define OPTION_MD5		(1 << 2)
 #define OPTION_WSCALE		(1 << 3)
+#define OPTION_FAST_OPEN_COOKIE	(1 << 8)
 
 struct tcp_out_options {
-	u8 options;		/* bit field of OPTION_* */
+	u16 options;		/* bit field of OPTION_* */
+	u16 mss;		/* 0 to disable */
 	u8 ws;			/* window scale, 0 to disable */
 	u8 num_sack_blocks;	/* number of SACK blocks to include */
-	u16 mss;		/* 0 to disable */
 	__u32 tsval, tsecr;	/* need to include OPTION_TS */
+	struct tcp_fastopen_cookie *fastopen_cookie;	/* Fast open cookie */
 };
 
 /* Write previously computed TCP options to the packet.
@@ -396,6 +398,8 @@ struct tcp_out_options {
 static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 			      const struct tcp_out_options *opts,
 			      __u8 **md5_hash) {
+	u16 options = opts->options;	/* mungable copy */
+
 	if (unlikely(OPTION_MD5 & opts->options)) {
 		*ptr++ = htonl((TCPOPT_NOP << 24) |
 			       (TCPOPT_NOP << 16) |
@@ -462,6 +466,21 @@ static void tcp_options_write(__be32 *ptr, struct tcp_sock *tp,
 		}
 
 		tp->rx_opt.dsack = 0;
+	}
+
+	if (unlikely(OPTION_FAST_OPEN_COOKIE & options)) {
+		struct tcp_fastopen_cookie *foc = opts->fastopen_cookie;
+
+		*ptr++ = htonl((TCPOPT_EXP << 24) |
+			       ((TCPOLEN_EXP_FASTOPEN_BASE + foc->len) << 16) |
+			       TCPOPT_FASTOPEN_MAGIC);
+
+		memcpy(ptr, foc->val, foc->len);
+		if ((foc->len & 3) == 2) {
+			u8 *align = ((u8 *)ptr) + foc->len;
+			align[0] = align[1] = TCPOPT_NOP;
+		}
+		ptr += (foc->len + 3) >> 2;
 	}
 }
 
