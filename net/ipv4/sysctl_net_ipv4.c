@@ -240,8 +240,8 @@ static int strategy_allowed_congestion_control(ctl_table *table,
 
 }
 
-int proc_tcp_fastopen_key(ctl_table *ctl, int write, void __user *buffer,
-			  size_t *lenp, loff_t *ppos)
+static int proc_tcp_fastopen_key(ctl_table *ctl, int write, void __user *buffer,
+				 size_t *lenp, loff_t *ppos)
 {
 	ctl_table tbl = { .maxlen = (TCP_FASTOPEN_KEY_LENGTH * 2 + 10) };
 	struct tcp_fastopen_context *ctxt;
