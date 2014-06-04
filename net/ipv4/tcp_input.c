@@ -5837,6 +5837,10 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 				 * need req so release it.
 				 */
 				if (req) {
+					if (tcp_rsk(req)->snt_synack)
+						tcp_valid_rtt_meas(sk,
+						    tcp_time_stamp -
+						    tcp_rsk(req)->snt_synack);
 					reqsk_fastopen_remove(sk, req, false);
 				} else {
 					/* Make sure socket is routed, for
