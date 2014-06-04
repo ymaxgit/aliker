@@ -518,6 +518,7 @@ extern __u32 cookie_v6_init_sequence(struct sock *sk, struct sk_buff *skb,
 extern void __tcp_push_pending_frames(struct sock *sk, unsigned int cur_mss,
 				      int nonagle);
 extern int tcp_may_send_now(struct sock *sk);
+extern int __tcp_retransmit_skb(struct sock *, struct sk_buff *);
 extern int tcp_retransmit_skb(struct sock *, struct sk_buff *);
 extern void tcp_retransmit_timer(struct sock *sk);
 extern void tcp_xmit_retransmit_queue(struct sock *);
