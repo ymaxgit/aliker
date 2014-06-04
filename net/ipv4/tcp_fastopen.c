@@ -122,12 +122,15 @@ static DEFINE_SPINLOCK(tfo_hash_lock);
 static struct tfo_hash_entry *__tfo_get_entry(const struct tfo_inetpeer_addr *addr,
 					      struct net *net, unsigned int hash);
 
-static void tfo_hash_suck_dst(struct tfo_hash_entry *te, struct dst_entry *dst)
+static void tfo_hash_suck_dst(struct tfo_hash_entry *te, struct dst_entry *dst,
+			      bool fastopen_clear)
 {
 	te->tfoe_stamp = jiffies;
-	te->tfoe_fastopen.mss = 0;
-	te->tfoe_fastopen.syn_loss = 0;
-	te->tfoe_fastopen.cookie.len = 0;
+	if (fastopen_clear) {
+		te->tfoe_fastopen.mss = 0;
+		te->tfoe_fastopen.syn_loss = 0;
+		te->tfoe_fastopen.cookie.len = 0;
+	}
 }
 
 static bool addr_same(const struct tfo_inetpeer_addr *a,
@@ -151,7 +154,7 @@ static bool addr_same(const struct tfo_inetpeer_addr *a,
 static void tfo_hash_check_stamp(struct tfo_hash_entry *te, struct dst_entry *dst)
 {
 	if (te && unlikely(time_after(jiffies, te->tfoe_stamp + TFO_HASH_TIMEOUT)))
-		tfo_hash_suck_dst(te, dst);
+		tfo_hash_suck_dst(te, dst, false);
 }
 
 #define TFO_HASH_RECLAIM_DEPTH	5
@@ -195,7 +198,7 @@ static struct tfo_hash_entry *tfo_hash_new(struct dst_entry *dst,
 	}
 	te->tfoe_addr = *addr;
 
-	tfo_hash_suck_dst(te, dst);
+	tfo_hash_suck_dst(te, dst, true);
 
 	if (likely(!reclaim)) {
 		te->tfoe_next = net->ipv4.tfo_hash[hash].chain;
