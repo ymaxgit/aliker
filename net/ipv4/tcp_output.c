@@ -552,7 +552,8 @@ static unsigned tcp_synack_options(struct sock *sk,
 				   struct request_sock *req,
 				   unsigned mss, struct sk_buff *skb,
 				   struct tcp_out_options *opts,
-				   struct tcp_md5sig_key **md5) {
+				   struct tcp_md5sig_key **md5,
+				   struct tcp_fastopen_cookie *foc) {
 	unsigned size = 0;
 	struct inet_request_sock *ireq = inet_rsk(req);
 	char doing_ts;
@@ -592,7 +593,15 @@ static unsigned tcp_synack_options(struct sock *sk,
 		if (unlikely(!doing_ts))
 			size += TCPOLEN_SACKPERM_ALIGNED;
 	}
-
+	if (foc != NULL) {
+		u32 need = TCPOLEN_EXP_FASTOPEN_BASE + foc->len;
+		need = (need + 3) & ~3U;  /* Align to 32 bits */
+		if (MAX_TCP_OPTION_SPACE - size >= need) {
+			opts->options |= OPTION_FAST_OPEN_COOKIE;
+			opts->fastopen_cookie = foc;
+			size += need;
+		}
+	}
 	return size;
 }
 
@@ -2282,7 +2291,8 @@ int tcp_send_synack(struct sock *sk)
 
 /* Prepare a SYN-ACK. */
 struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
-				struct request_sock *req)
+				struct request_sock *req,
+				struct tcp_fastopen_cookie *foc)
 {
 	struct inet_request_sock *ireq = inet_rsk(req);
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -2337,7 +2347,7 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 #endif
 	TCP_SKB_CB(skb)->when = tcp_time_stamp;
 	tcp_header_size = tcp_synack_options(sk, req, mss,
-					     skb, &opts, &md5) +
+					     skb, &opts, &md5, foc) +
 			  sizeof(struct tcphdr);
 
 	skb_push(skb, tcp_header_size);
@@ -2356,7 +2366,8 @@ struct sk_buff *tcp_make_synack(struct sock *sk, struct dst_entry *dst,
 	tcp_init_nondata_skb(skb, tcp_rsk(req)->snt_isn,
 			     TCPCB_FLAG_SYN | TCPCB_FLAG_ACK);
 	th->seq = htonl(TCP_SKB_CB(skb)->seq);
-	th->ack_seq = htonl(tcp_rsk(req)->rcv_isn + 1);
+	/* XXX data is queued and acked as is. No buffer/window check */
+	th->ack_seq = htonl(tcp_rsk(req)->rcv_nxt);
 
 	/* RFC1323: The window in SYN & SYN/ACK segments is never scaled. */
 	th->window = htons(min(req->rcv_wnd, 65535U));
