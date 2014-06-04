@@ -410,6 +410,10 @@ extern void			tcp_enter_frto(struct sock *sk);
 extern void			tcp_enter_loss(struct sock *sk, int how);
 extern void			tcp_clear_retrans(struct tcp_sock *tp);
 extern void			tcp_update_metrics(struct sock *sk);
+extern void			tcp_fastopen_cache_get(struct sock *sk, u16 *mss,
+						       struct tcp_fastopen_cookie *cookie);
+extern void			tcp_fastopen_cache_set(struct sock *sk, u16 mss,
+						       struct tcp_fastopen_cookie *cookie);
 
 extern void			tcp_close(struct sock *sk, 
 					  long timeout);
