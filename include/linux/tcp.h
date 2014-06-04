@@ -313,7 +313,8 @@ struct tcp_sock {
 	u16	advmss;		/* Advertised MSS			*/
 	u8	frto_counter;	/* Number of new acks after RTO */
 	u8	nonagle;	/* Disable Nagle algorithm?             */
-	u8	syn_fastopen:1;	/* SYN includes Fast Open option */
+	u8	syn_data:1,	/* SYN includes data */
+		syn_fastopen:1;	/* SYN includes Fast Open option */
 
 /* RTT measurement */
 	u32	srtt;		/* smoothed round trip time << 3	*/
