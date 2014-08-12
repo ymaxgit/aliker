@@ -99,11 +99,13 @@ enum {
 #define TCP_THIN_LINEAR_TIMEOUTS 16      /* Use linear timeouts for thin streams*/
 #define TCP_THIN_DUPACK         17      /* Fast retrans. after 1 dupack */
 #define TCP_USER_TIMEOUT	18	/* How long for loss retry before timeout */
+#define TCP_FASTOPEN		23	/* Enable FastOpen on listeners */
 
 #define TCPI_OPT_TIMESTAMPS	1
 #define TCPI_OPT_SACK		2
 #define TCPI_OPT_WSCALE		4
 #define TCPI_OPT_ECN		8
+#define TCPI_OPT_SYN_DATA	32 /* SYN-ACK acked data in SYN sent or rcvd */
 
 enum tcp_ca_state
 {
@@ -196,6 +198,17 @@ static inline unsigned int tcp_optlen(const struct sk_buff *skb)
 	return (tcp_hdr(skb)->doff - 5) * 4;
 }
 
+/* TCP Fast Open */
+#define TCP_FASTOPEN_COOKIE_MIN	4	/* Min Fast Open Cookie size in bytes */
+#define TCP_FASTOPEN_COOKIE_MAX	16	/* Max Fast Open Cookie size in bytes */
+#define TCP_FASTOPEN_COOKIE_SIZE 8	/* the size employed by this impl. */
+
+/* TCP Fast Open Cookie as stored in memory */
+struct tcp_fastopen_cookie {
+	s8	len;
+	u8	val[TCP_FASTOPEN_COOKIE_MAX];
+};
+
 /* This defines a selective acknowledgement block. */
 struct tcp_sack_block_wire {
 	__be32	start_seq;
@@ -238,9 +251,14 @@ struct tcp_request_sock {
 	/* Only used by TCP MD5 Signature so far. */
 	const struct tcp_request_sock_ops *af_specific;
 #endif
+	struct sock			*listener; /* needed for TFO */
 	u32			 	rcv_isn;
 	u32			 	snt_isn;
 	u32				snt_synack; /* synack sent time */
+	u32				rcv_nxt; /* the ack # by SYNACK. For
+						  * FastOpen it's the seq#
+						  * after data-in-SYN.
+						  */
 };
 
 static inline struct tcp_request_sock *tcp_rsk(const struct request_sock *req)
@@ -303,6 +321,9 @@ struct tcp_sock {
 	u16	advmss;		/* Advertised MSS			*/
 	u8	frto_counter;	/* Number of new acks after RTO */
 	u8	nonagle;	/* Disable Nagle algorithm?             */
+	u8	syn_data:1,	/* SYN includes data */
+		syn_fastopen:1,	/* SYN includes Fast Open option */
+		syn_data_acked:1;/* data in SYN is acked by SYN-ACK */
 
 /* RTT measurement */
 	u32	srtt;		/* smoothed round trip time << 3	*/
@@ -421,6 +442,13 @@ struct tcp_sock {
 				 * receiver in Recovery. */
 	u32	prr_out;	/* Total number of pkts sent during Recovery. */
 #endif
+
+/* TCP fastopen related information */
+	struct tcp_fastopen_request *fastopen_req;
+	/* fastopen_rsk points to request_sock that resulted in this big
+	 * socket. Used to retransmit SYNACKs etc.
+	 */
+	struct request_sock *fastopen_rsk;
 };
 
 static inline struct tcp_sock *tcp_sk(const struct sock *sk)
@@ -444,6 +472,34 @@ struct tcp_timewait_sock {
 static inline struct tcp_timewait_sock *tcp_twsk(const struct sock *sk)
 {
 	return (struct tcp_timewait_sock *)sk;
+}
+
+static inline bool tcp_passive_fastopen(const struct sock *sk)
+{
+	return (sk->sk_state == TCP_SYN_RECV &&
+		tcp_sk(sk)->fastopen_rsk != NULL);
+}
+
+static inline bool fastopen_cookie_present(struct tcp_fastopen_cookie *foc)
+{
+	return foc->len != -1;
+}
+
+static inline int fastopen_init_queue(struct sock *sk, int backlog)
+{
+	struct request_sock_queue *queue =
+	    &inet_csk(sk)->icsk_accept_queue;
+
+	if (queue->fastopenq == NULL) {
+		queue->fastopenq = kzalloc(
+		    sizeof(struct fastopen_queue),
+		    sk->sk_allocation);
+		if (queue->fastopenq == NULL)
+			return -ENOMEM;
+		spin_lock_init(&queue->fastopenq->lock);
+	}
+	queue->fastopenq->max_qlen = backlog;
+	return 0;
 }
 
 #endif

@@ -338,24 +338,13 @@ static void tcp_grow_window(struct sock *sk, struct sk_buff *skb)
 }
 
 /* 3. Tuning rcvbuf, when connection enters established state. */
-
 static void tcp_fixup_rcvbuf(struct sock *sk)
 {
 	u32 mss = tcp_sk(sk)->advmss;
-	u32 icwnd = TCP_DEFAULT_INIT_RCVWND;
 	int rcvmem;
 
-	/* Limit to 10 segments if mss <= 1460,
-	 * or 14600/mss segments, with a minimum of two segments.
-	 */
-	if (mss > 1460)
-		icwnd = max_t(u32, (1460 * TCP_DEFAULT_INIT_RCVWND) / mss, 2);
-
-	rcvmem = SKB_TRUESIZE(mss + MAX_TCP_HEADER);
-	while (tcp_win_from_space(rcvmem) < mss)
-		rcvmem += 128;
-
-	rcvmem *= icwnd;
+	rcvmem = 2 * SKB_TRUESIZE(mss + MAX_TCP_HEADER) *
+		 tcp_default_init_rwnd(mss);
 
 	if (sk->sk_rcvbuf < rcvmem)
 		sk->sk_rcvbuf = min(rcvmem, sysctl_tcp_rmem[2]);
@@ -364,7 +353,7 @@ static void tcp_fixup_rcvbuf(struct sock *sk)
 /* 4. Try to fixup all. It is made immediately after connection enters
  *    established state.
  */
-static void tcp_init_buffer_space(struct sock *sk)
+void tcp_init_buffer_space(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	int maxwin;
@@ -870,7 +859,7 @@ static void tcp_dsack_seen(struct tcp_sock *tp)
 
 /* Initialize metrics on socket. */
 
-static void tcp_init_metrics(struct sock *sk)
+void tcp_init_metrics(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct dst_entry *dst = __sk_dst_get(sk);
@@ -3179,6 +3168,22 @@ static inline void tcp_ack_update_rtt(struct sock *sk, const int flag,
 		tcp_ack_no_tstamp(sk, seq_rtt, flag);
 }
 
+/* Compute time elapsed between (last) SYNACK and the ACK completing 3WHS. */
+static void tcp_synack_rtt_meas(struct sock *sk, const u32 synack_stamp)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	s32 seq_rtt = -1;
+
+	if (synack_stamp && !tp->total_retrans)
+		seq_rtt = tcp_time_stamp - synack_stamp;
+
+	/* If the ACK acks both the SYNACK and the (Fast Open'd) data packets
+	 * sent in SYN_RECV, SYNACK RTT is the smooth RTT computed in tcp_ack()
+	 */
+	if (!tp->srtt)
+		tcp_ack_update_rtt(sk, FLAG_SYN_ACKED, seq_rtt);
+}
+
 static void tcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 {
 	const struct inet_connection_sock *icsk = inet_csk(sk);
@@ -3192,6 +3197,12 @@ static void tcp_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 static void tcp_rearm_rto(struct sock *sk)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
+
+	/* If the retrans timer is currently being used by Fast Open
+	 * for SYN-ACK retrans purpose, stay put.
+	 */
+	if (tp->fastopen_rsk)
+		return;
 
 	if (!tp->packets_out) {
 		inet_csk_clear_xmit_timer(sk, ICSK_TIME_RETRANS);
@@ -3774,7 +3785,7 @@ old_ack:
  * the fast version below fails.
  */
 void tcp_parse_options(struct sk_buff *skb, struct tcp_options_received *opt_rx,
-		       int estab)
+		       int estab, struct tcp_fastopen_cookie *foc)
 {
 	unsigned char *ptr;
 	struct tcphdr *th = tcp_hdr(skb);
@@ -3858,8 +3869,25 @@ void tcp_parse_options(struct sk_buff *skb, struct tcp_options_received *opt_rx,
 				 */
 				break;
 #endif
-			}
 
+			case TCPOPT_EXP:
+				/* Fast Open option shares code 254 using a
+				 * 16 bits magic number. It's valid only in
+				 * SYN or SYN-ACK with an even size.
+				 */
+				if (opsize < TCPOLEN_EXP_FASTOPEN_BASE ||
+				    get_unaligned_be16(ptr) != TCPOPT_FASTOPEN_MAGIC ||
+				    foc == NULL || !th->syn || (opsize & 1))
+					break;
+				foc->len = opsize - TCPOLEN_EXP_FASTOPEN_BASE;
+				if (foc->len >= TCP_FASTOPEN_COOKIE_MIN &&
+				    foc->len <= TCP_FASTOPEN_COOKIE_MAX)
+					memcpy(foc->val, ptr + 2, foc->len);
+				else if (foc->len != 0)
+					foc->len = -1;
+				break;
+
+			}
 			ptr += opsize-2;
 			length -= opsize;
 		}
@@ -3896,7 +3924,7 @@ static int tcp_fast_parse_options(struct sk_buff *skb, struct tcphdr *th,
 		if (tcp_parse_aligned_timestamp(tp, th))
 			return 1;
 	}
-	tcp_parse_options(skb, &tp->rx_opt, 1);
+	tcp_parse_options(skb, &tp->rx_opt, 1, NULL);
 	return 1;
 }
 
@@ -4030,7 +4058,7 @@ static inline int tcp_sequence(struct tcp_sock *tp, u32 seq, u32 end_seq)
 }
 
 /* When we get a reset we do this. */
-static void tcp_reset(struct sock *sk)
+void tcp_reset(struct sock *sk)
 {
 	/* We want the right error as BSD sees it (and indeed as we do). */
 	switch (sk->sk_state) {
@@ -5439,14 +5467,57 @@ discard:
 	return 0;
 }
 
+static bool tcp_rcv_fastopen_synack(struct sock *sk, struct sk_buff *synack,
+				    struct tcp_fastopen_cookie *cookie)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+	struct sk_buff *data = tp->syn_data ? tcp_write_queue_head(sk) : NULL;
+	u16 mss = tp->rx_opt.mss_clamp;
+	bool syn_drop;
+
+	if (mss == tp->rx_opt.user_mss) {
+		struct tcp_options_received opt;
+
+		/* Get original SYNACK MSS value if user MSS sets mss_clamp */
+		tcp_clear_options(&opt);
+		opt.user_mss = opt.mss_clamp = 0;
+		tcp_parse_options(synack, &opt, 0, NULL);
+		mss = opt.mss_clamp;
+	}
+
+	if (!tp->syn_fastopen)  /* Ignore an unsolicited cookie */
+		cookie->len = -1;
+
+	/* The SYN-ACK neither has cookie nor acknowledges the data. Presumably
+	 * the remote receives only the retransmitted (regular) SYNs: either
+	 * the original SYN-data or the corresponding SYN-ACK is lost.
+	 */
+	syn_drop = (cookie->len <= 0 && data && tp->total_retrans);
+
+	tcp_fastopen_cache_set(sk, mss, cookie, syn_drop);
+
+	if (data) { /* Retransmit unacked data in SYN */
+		tcp_for_write_queue_from(data, sk) {
+			if (data == tcp_send_head(sk) ||
+			    __tcp_retransmit_skb(sk, data))
+				break;
+		}
+		tcp_rearm_rto(sk);
+		return true;
+	}
+	tp->syn_data_acked = tp->syn_data;
+	return false;
+}
+
 static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 					 struct tcphdr *th, unsigned len)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct tcp_fastopen_cookie foc = { .len = -1 };
 	int saved_clamp = tp->rx_opt.mss_clamp;
 
-	tcp_parse_options(skb, &tp->rx_opt, 0);
+	tcp_parse_options(skb, &tp->rx_opt, 0, &foc);
 
 	if (th->ack) {
 		/* rfc793:
@@ -5456,11 +5527,9 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 		 *	  If SEG.ACK =< ISS, or SEG.ACK > SND.NXT, send
 		 *        a reset (unless the RST bit is set, if so drop
 		 *        the segment and return)"
-		 *
-		 *  We do not send data with SYN, so that RFC-correct
-		 *  test reduces to:
 		 */
-		if (TCP_SKB_CB(skb)->ack_seq != tp->snd_nxt)
+		if (!after(TCP_SKB_CB(skb)->ack_seq, tp->snd_una) ||
+		    after(TCP_SKB_CB(skb)->ack_seq, tp->snd_nxt))
 			goto reset_and_undo;
 
 		if (tp->rx_opt.saw_tstamp && tp->rx_opt.rcv_tsecr &&
@@ -5575,6 +5644,10 @@ static int tcp_rcv_synsent_state_process(struct sock *sk, struct sk_buff *skb,
 			sk_wake_async(sk, SOCK_WAKE_IO, POLL_OUT);
 		}
 
+		if ((tp->syn_fastopen || tp->syn_data) &&
+		    tcp_rcv_fastopen_synack(sk, skb, &foc))
+			return -1;
+
 		if (!skb->friend && (sk->sk_write_pending ||
 		    icsk->icsk_accept_queue.rskq_defer_accept ||
 		    icsk->icsk_ack.pingpong)) {
@@ -5654,7 +5727,9 @@ discard:
 		tcp_send_synack(sk);
 #if 0
 		/* Note, we could accept data and URG from this segment.
-		 * There are no obstacles to make this.
+		 * There are no obstacles to make this (except that we must
+		 * either change tcp_recvmsg() to prevent it from returning data
+		 * before 3WHS completes per RFC793, or employ TCP Fast Open).
 		 *
 		 * However, if we ignore data in ACKless segments sometimes,
 		 * we have no reasons to accept it sometimes.
@@ -5694,8 +5769,9 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct inet_connection_sock *icsk = inet_csk(sk);
+	struct request_sock *req;
 	int queued = 0;
-	int res;
+	u32 synack_stamp;
 
 	tp->rx_opt.saw_tstamp = 0;
 
@@ -5750,9 +5826,16 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 		return 0;
 	}
 
-	res = tcp_validate_incoming(sk, skb, th, 0);
-	if (res <= 0)
-		return -res;
+	req = tp->fastopen_rsk;
+	if (req != NULL) {
+		WARN_ON_ONCE(sk->sk_state != TCP_SYN_RECV &&
+		    sk->sk_state != TCP_FIN_WAIT1);
+
+		if (tcp_check_req(sk, skb, req, NULL, true) == NULL)
+			goto discard;
+	}
+	if (!tcp_validate_incoming(sk, skb, th, 0))
+		return 0;
 
 	/* step 5: check the ACK field */
 	if (th->ack) {
@@ -5761,7 +5844,25 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 		switch (sk->sk_state) {
 		case TCP_SYN_RECV:
 			if (acceptable) {
-				tp->copied_seq = tp->rcv_nxt;
+				/* Once we leave TCP_SYN_RECV, we no longer
+				 * need req so release it.
+				 */
+				if (req) {
+					synack_stamp = tcp_rsk(req)->snt_synack;
+					tp->total_retrans = req->retrans;
+					reqsk_fastopen_remove(sk, req, false);
+				} else {
+					synack_stamp = tp->lsndtime;
+					/* Make sure socket is routed, for
+					 * correct metrics.
+					 */
+					icsk->icsk_af_ops->rebuild_header(sk);
+					tcp_init_congestion_control(sk);
+
+					tcp_mtup_init(sk);
+					tcp_init_buffer_space(sk);
+					tp->copied_seq = tp->rcv_nxt;
+				}
 				smp_mb();
 				tcp_set_state(sk, TCP_ESTABLISHED);
 				sk->sk_state_change(sk);
@@ -5779,27 +5880,32 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 				tp->snd_wnd = ntohs(th->window) <<
 					      tp->rx_opt.snd_wscale;
 				tcp_init_wl(tp, TCP_SKB_CB(skb)->seq);
+				tcp_synack_rtt_meas(sk, synack_stamp);
 
 				if (tp->rx_opt.tstamp_ok)
 					tp->advmss -= TCPOLEN_TSTAMP_ALIGNED;
 
-				/* Make sure socket is routed, for
-				 * correct metrics.
-				 */
-				icsk->icsk_af_ops->rebuild_header(sk);
-
-				tcp_init_metrics(sk);
-
-				tcp_init_congestion_control(sk);
+				if (req) {
+					/* Re-arm the timer because data may
+					 * have been sent out. This is similar
+					 * to the regular data transmission case
+					 * when new data has just been ack'ed.
+					 *
+					 * (TFO) - we could try to be more
+					 * aggressive and retranmitting any data
+					 * sooner based on when they were sent
+					 * out.
+					 */
+					tcp_rearm_rto(sk);
+				} else
+					tcp_init_metrics(sk);
 
 				/* Prevent spurious tcp_cwnd_restart() on
 				 * first data packet.
 				 */
 				tp->lsndtime = tcp_time_stamp;
 
-				tcp_mtup_init(sk);
 				tcp_initialize_rcv_mss(sk);
-				tcp_init_buffer_space(sk);
 				tcp_fast_path_on(tp);
 			} else {
 				return 1;
@@ -5807,6 +5913,24 @@ int tcp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			break;
 
 		case TCP_FIN_WAIT1:
+			/* If we enter the TCP_FIN_WAIT1 state and we are a
+			 * Fast Open socket and this is the first acceptable
+			 * ACK we have received, this would have acknowledged
+			 * our SYNACK so stop the SYNACK timer.
+			 */
+			if (req != NULL) {
+				/* Return RST if ack_seq is invalid.
+				 * Note that RFC793 only says to generate a
+				 * DUPACK for it but for TCP Fast Open it seems
+				 * better to treat this case like TCP_SYN_RECV
+				 * above.
+				 */
+				if (!acceptable)
+					return 1;
+				/* We no longer need the request sock. */
+				reqsk_fastopen_remove(sk, req, false);
+				tcp_rearm_rto(sk);
+			}
 			if (tp->snd_una == tp->write_seq) {
 				tcp_set_state(sk, TCP_FIN_WAIT2);
 				sk->sk_shutdown |= SEND_SHUTDOWN;

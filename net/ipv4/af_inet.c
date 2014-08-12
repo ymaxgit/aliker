@@ -147,6 +147,8 @@ void inet_sock_destruct(struct sock *sk)
 		pr_err("Attempt to release alive inet socket %p\n", sk);
 		return;
 	}
+	if (sk->sk_protocol == IPPROTO_TCP)
+		kfree(inet_csk(sk)->icsk_accept_queue.fastopenq);
 
 	WARN_ON(atomic_read(&sk->sk_rmem_alloc));
 	WARN_ON(atomic_read(&sk->sk_wmem_alloc));
@@ -209,6 +211,26 @@ int inet_listen(struct socket *sock, int backlog)
 	 * we can only allow the backlog to be adjusted.
 	 */
 	if (old_state != TCP_LISTEN) {
+		/* Check special setups for testing purpose to enable TFO w/o
+		 * requiring TCP_FASTOPEN sockopt.
+		 * Note that only TCP sockets (SOCK_STREAM) will reach here.
+		 * Also fastopenq may already been allocated because this
+		 * socket was in TCP_LISTEN state previously but was
+		 * shutdown() (rather than close()).
+		 */
+		if ((sysctl_tcp_fastopen & TFO_SERVER_ENABLE) != 0 &&
+		    inet_csk(sk)->icsk_accept_queue.fastopenq == NULL) {
+			if ((sysctl_tcp_fastopen & TFO_SERVER_WO_SOCKOPT1) != 0)
+				err = fastopen_init_queue(sk, backlog);
+			else if ((sysctl_tcp_fastopen &
+				  TFO_SERVER_WO_SOCKOPT2) != 0)
+				err = fastopen_init_queue(sk,
+				    ((uint)sysctl_tcp_fastopen) >> 16);
+			else
+				err = 0;
+			if (err)
+				goto out;
+		}
 		err = inet_csk_listen_start(sk, backlog);
 		if (err)
 			goto out;
@@ -543,11 +565,12 @@ int inet_dgram_connect(struct socket *sock, struct sockaddr * uaddr,
 }
 EXPORT_SYMBOL(inet_dgram_connect);
 
-static long inet_wait_for_connect(struct sock *sk, long timeo)
+static long inet_wait_for_connect(struct sock *sk, long timeo, int writebias)
 {
 	DEFINE_WAIT(wait);
 
 	prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
+	sk->sk_write_pending += writebias;
 
 	/* Basic assumption: if someone sets sk->sk_err, he _must_
 	 * change state of the socket from TCP_SYN_*.
@@ -563,6 +586,7 @@ static long inet_wait_for_connect(struct sock *sk, long timeo)
 		prepare_to_wait(sk->sk_sleep, &wait, TASK_INTERRUPTIBLE);
 	}
 	finish_wait(sk->sk_sleep, &wait);
+	sk->sk_write_pending -= writebias;
 	return timeo;
 }
 
@@ -570,14 +594,12 @@ static long inet_wait_for_connect(struct sock *sk, long timeo)
  *	Connect to a remote host. There is regrettably still a little
  *	TCP 'magic' in here.
  */
-int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
-			int addr_len, int flags)
+int __inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
+			  int addr_len, int flags)
 {
 	struct sock *sk = sock->sk;
 	int err;
 	long timeo;
-
-	lock_sock(sk);
 
 	if (uaddr->sa_family == AF_UNSPEC) {
 		err = sk->sk_prot->disconnect(sk, flags);
@@ -618,8 +640,12 @@ int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	timeo = sock_sndtimeo(sk, flags & O_NONBLOCK);
 
 	if ((1 << sk->sk_state) & (TCPF_SYN_SENT | TCPF_SYN_RECV)) {
+		int writebias = (sk->sk_protocol == IPPROTO_TCP) &&
+				tcp_sk(sk)->fastopen_req &&
+				tcp_sk(sk)->fastopen_req->data ? 1 : 0;
+
 		/* Error code is set above */
-		if (!timeo || !inet_wait_for_connect(sk, timeo))
+		if (!timeo || !inet_wait_for_connect(sk, timeo, writebias))
 			goto out;
 
 		err = sock_intr_errno(timeo);
@@ -641,7 +667,6 @@ int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
 	sock->state = SS_CONNECTED;
 	err = 0;
 out:
-	release_sock(sk);
 	return err;
 
 sock_error:
@@ -650,6 +675,18 @@ sock_error:
 	if (sk->sk_prot->disconnect(sk, flags))
 		sock->state = SS_DISCONNECTING;
 	goto out;
+}
+EXPORT_SYMBOL(__inet_stream_connect);
+
+int inet_stream_connect(struct socket *sock, struct sockaddr *uaddr,
+			int addr_len, int flags)
+{
+	int err;
+
+	lock_sock(sock->sk);
+	err = __inet_stream_connect(sock, uaddr, addr_len, flags);
+	release_sock(sock->sk);
+	return err;
 }
 EXPORT_SYMBOL(inet_stream_connect);
 
@@ -669,7 +706,8 @@ int inet_accept(struct socket *sock, struct socket *newsock, int flags)
 	lock_sock(sk2);
 
 	WARN_ON(!((1 << sk2->sk_state) &
-		  (TCPF_ESTABLISHED | TCPF_CLOSE_WAIT | TCPF_CLOSE)));
+		  (TCPF_ESTABLISHED | TCPF_SYN_RECV |
+		  TCPF_CLOSE_WAIT | TCPF_CLOSE)));
 
 	sock_graft(sk2, newsock);
 

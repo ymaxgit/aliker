@@ -7,6 +7,7 @@
 
 #include <net/inet_frag.h>
 
+struct tfo_hash_bucket;
 struct ctl_table_header;
 struct ipv4_devconf;
 struct fib_rules_ops;
@@ -30,6 +31,9 @@ struct netns_ipv4 {
 
 	struct sock		**icmp_sk;
 	struct sock		*tcp_sock;
+
+	struct tfo_hash_bucket	*tfo_hash;
+	unsigned int		tfo_hash_log;
 
 	struct netns_frags	frags;
 #ifdef CONFIG_NETFILTER

@@ -102,7 +102,7 @@ tcp_timewait_state_process(struct inet_timewait_sock *tw, struct sk_buff *skb,
 
 	tmp_opt.saw_tstamp = 0;
 	if (th->doff > (sizeof(*th) >> 2) && tcptw->tw_ts_recent_stamp) {
-		tcp_parse_options(skb, &tmp_opt, 0);
+		tcp_parse_options(skb, &tmp_opt, 0, NULL);
 
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent	= tcptw->tw_ts_recent;
@@ -422,6 +422,8 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 		newtp->sacked_out = 0;
 		newtp->fackets_out = 0;
 		newtp->snd_ssthresh = TCP_INFINITE_SSTHRESH;
+		newtp->lsndtime = treq->snt_synack;
+		newtp->total_retrans = req->retrans;
 
 		/* So many TCP implementations out there (incorrectly) count the
 		 * initial SYN frame in their delayed-ACK and congestion control
@@ -491,6 +493,8 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 			newicsk->icsk_ack.last_seg_size = skb->len - newtp->tcp_header_len;
 		newtp->rx_opt.mss_clamp = req->mss;
 		TCP_ECN_openreq_child(newtp, req);
+		newtp->fastopen_rsk = NULL;
+		newtp->syn_data_acked = 0;
 
 		TCP_INC_STATS_BH(sock_net(sk), TCP_MIB_PASSIVEOPENS);
 	}
@@ -498,13 +502,18 @@ struct sock *tcp_create_openreq_child(struct sock *sk, struct request_sock *req,
 }
 
 /*
- *	Process an incoming packet for SYN_RECV sockets represented
- *	as a request_sock.
+ * Process an incoming packet for SYN_RECV sockets represented as a
+ * request_sock. Normally sk is the listener socket but for TFO it
+ * points to the child socket.
+ *
+ * XXX (TFO) - The current impl contains a special check for ack
+ * validation and inside tcp_v4_reqsk_send_ack(). Can we do better?
  */
 
 struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 			   struct request_sock *req,
-			   struct request_sock **prev)
+			   struct request_sock **prev,
+			   bool fastopen)
 {
 	const struct tcphdr *th = tcp_hdr(skb);
 	__be32 flg = tcp_flag_word(th) & (TCP_FLAG_RST|TCP_FLAG_SYN|TCP_FLAG_ACK);
@@ -512,9 +521,11 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	struct tcp_options_received tmp_opt;
 	struct sock *child;
 
+	BUG_ON(fastopen == (sk->sk_state == TCP_LISTEN));
+
 	tmp_opt.saw_tstamp = 0;
 	if (th->doff > (sizeof(struct tcphdr)>>2)) {
-		tcp_parse_options(skb, &tmp_opt, 0);
+		tcp_parse_options(skb, &tmp_opt, 0, NULL);
 
 		if (tmp_opt.saw_tstamp) {
 			tmp_opt.ts_recent = req->ts_recent;
@@ -547,6 +558,9 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		 *
 		 * Enforce "SYN-ACK" according to figure 8, figure 6
 		 * of RFC793, fixed by RFC1122.
+		 *
+		 * Note that even if there is new data in the SYN packet
+		 * they will be thrown away too.
 		 */
 		req->rsk_ops->rtx_syn_ack(sk, req);
 		return NULL;
@@ -604,9 +618,12 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	 *                  sent (the segment carries an unacceptable ACK) ...
 	 *                  a reset is sent."
 	 *
-	 * Invalid ACK: reset will be sent by listening socket
+	 * Invalid ACK: reset will be sent by listening socket.
+	 * Note that the ACK validity check for a Fast Open socket is done
+	 * elsewhere and is checked directly against the child socket rather
+	 * than req because user data may have been sent out.
 	 */
-	if ((flg & TCP_FLAG_ACK) &&
+	if ((flg & TCP_FLAG_ACK) && !fastopen &&
 	    (TCP_SKB_CB(skb)->ack_seq != tcp_rsk(req)->snt_isn + 1))
 		return sk;
 
@@ -618,7 +635,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 	/* RFC793: "first check sequence number". */
 
 	if (paws_reject || !tcp_in_window(TCP_SKB_CB(skb)->seq, TCP_SKB_CB(skb)->end_seq,
-					  tcp_rsk(req)->rcv_isn + 1, tcp_rsk(req)->rcv_isn + 1 + req->rcv_wnd)) {
+					  tcp_rsk(req)->rcv_nxt, tcp_rsk(req)->rcv_nxt + req->rcv_wnd)) {
 		/* Out of window: send ACK and drop. */
 		if (!(flg & TCP_FLAG_RST))
 			req->rsk_ops->send_ack(sk, skb, req);
@@ -629,7 +646,7 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 	/* In sequence, PAWS is OK. */
 
-	if (tmp_opt.saw_tstamp && !after(TCP_SKB_CB(skb)->seq, tcp_rsk(req)->rcv_isn + 1))
+	if (tmp_opt.saw_tstamp && !after(TCP_SKB_CB(skb)->seq, tcp_rsk(req)->rcv_nxt))
 		req->ts_recent = tmp_opt.rcv_tsval;
 
 	if (TCP_SKB_CB(skb)->seq == tcp_rsk(req)->rcv_isn) {
@@ -648,9 +665,18 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 
 	/* ACK sequence verified above, just make sure ACK is
 	 * set.  If ACK not set, just silently drop the packet.
+	 *
+	 * XXX (TFO) - if we ever allow "data after SYN", the
+	 * following check needs to be removed.
 	 */
 	if (!(flg & TCP_FLAG_ACK))
 		return NULL;
+
+	/* For Fast Open no more processing is needed (sk is the
+	 * child socket).
+	 */
+	if (fastopen)
+		return sk;
 
 	/* While TCP_DEFER_ACCEPT is active, drop bare ACK. */
 	if (req->retrans < inet_csk(sk)->icsk_accept_queue.rskq_defer_accept &&
@@ -660,10 +686,6 @@ struct sock *tcp_check_req(struct sock *sk, struct sk_buff *skb,
 		inet_rsk(req)->acked = 1;
 		return NULL;
 	}
-	if (tmp_opt.saw_tstamp && tmp_opt.rcv_tsecr)
-		tcp_rsk(req)->snt_synack = tmp_opt.rcv_tsecr;
-	else if (req->retrans) /* don't take RTT sample if retrans && ~TS */
-		tcp_rsk(req)->snt_synack = 0;
 
 	/* OK, ACK is valid, create big socket and
 	 * feed this segment to it. It will repeat all
@@ -688,11 +710,21 @@ listen_overflow:
 	}
 
 embryonic_reset:
-	NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);
-	if (!(flg & TCP_FLAG_RST))
+	if (!(flg & TCP_FLAG_RST)) {
+		/* Received a bad SYN pkt - for TFO We try not to reset
+		 * the local connection unless it's really necessary to
+		 * avoid becoming vulnerable to outside attack aiming at
+		 * resetting legit local connections.
+		 */
 		req->rsk_ops->send_reset(sk, skb);
-
-	inet_csk_reqsk_queue_drop(sk, req, prev);
+	} else if (fastopen) { /* received a valid RST pkt */
+		reqsk_fastopen_remove(sk, req, true);
+		tcp_reset(sk);
+	}
+	if (!fastopen) {
+		inet_csk_reqsk_queue_drop(sk, req, prev);
+		NET_INC_STATS_BH(sock_net(sk), LINUX_MIB_EMBRYONICRSTS);
+	}
 	return NULL;
 }
 
@@ -700,6 +732,12 @@ embryonic_reset:
  * Queue segment on the new socket if the new socket is active,
  * otherwise we just shortcircuit this and continue with
  * the new socket.
+ *
+ * For the vast majority of cases child->sk_state will be TCP_SYN_RECV
+ * when entering. But other states are possible due to a race condition
+ * where after __inet_lookup_established() fails but before the listener
+ * locked is obtained, other packets cause the same connection to
+ * be created.
  */
 
 int tcp_child_process(struct sock *parent, struct sock *child,

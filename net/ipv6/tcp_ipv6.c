@@ -503,7 +503,7 @@ static int tcp_v6_send_synack(struct sock *sk, struct request_sock *req)
 	if ((err = xfrm_lookup(sock_net(sk), &dst, &fl, sk, 0)) < 0)
 		goto done;
 
-	skb = tcp_make_synack(sk, dst, req);
+	skb = tcp_make_synack(sk, dst, req, NULL);
 	if (skb) {
 		struct tcphdr *th = tcp_hdr(skb);
 
@@ -1138,7 +1138,7 @@ static struct sock *tcp_v6_hnd_req(struct sock *sk,struct sk_buff *skb)
 				   &ipv6_hdr(skb)->saddr,
 				   &ipv6_hdr(skb)->daddr, inet6_iif(skb));
 	if (req)
-		return tcp_check_req(sk, skb, req, prev);
+		return tcp_check_req(sk, skb, req, prev, false);
 
 	nsk = __inet6_lookup_established(sock_net(sk), &tcp_hashinfo,
 			&ipv6_hdr(skb)->saddr, th->source,
@@ -1211,7 +1211,7 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	tmp_opt.mss_clamp = IPV6_MIN_MTU - sizeof(struct tcphdr) - sizeof(struct ipv6hdr);
 	tmp_opt.user_mss = tp->rx_opt.user_mss;
 
-	tcp_parse_options(skb, &tmp_opt, 0);
+	tcp_parse_options(skb, &tmp_opt, 0, NULL);
 
 	if (want_cookie && !tmp_opt.saw_tstamp)
 		tcp_clear_options(&tmp_opt);
@@ -1247,7 +1247,6 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 	}
 
 	tcp_rsk(req)->snt_isn = isn;
-	tcp_rsk(req)->snt_synack = tcp_time_stamp;
 
 	security_inet_conn_request(sk, skb, req);
 
@@ -1255,6 +1254,8 @@ static int tcp_v6_conn_request(struct sock *sk, struct sk_buff *skb)
 		goto drop;
 
 	if (!want_cookie) {
+		tcp_rsk(req)->snt_synack = tcp_time_stamp;
+		tcp_rsk(req)->listener = NULL;
 		inet6_csk_reqsk_queue_hash_add(sk, req, TCP_TIMEOUT_INIT);
 		return 0;
 	}
@@ -1446,10 +1447,6 @@ struct sock *tcp_v6_syn_recv_sock(struct sock *sk, struct sk_buff *skb,
 	tcp_sync_mss(newsk, dst_mtu(dst));
 	newtp->advmss = dst_metric(dst, RTAX_ADVMSS);
 	tcp_initialize_rcv_mss(newsk);
-	if (tcp_rsk(req)->snt_synack)
-		tcp_valid_rtt_meas(newsk,
-		    tcp_time_stamp - tcp_rsk(req)->snt_synack);
-	newtp->total_retrans = req->retrans;
 
 	newinet->daddr = newinet->saddr = newinet->rcv_saddr = LOOPBACK4_IPV6;
 
