@@ -5,6 +5,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/hash.h>
 #include <linux/slab.h>
 #include <linux/blkdev.h>
 #include <linux/bio.h>
@@ -38,6 +39,9 @@ struct throtl_rb_root {
 
 #define rb_entry_tg(node)	rb_entry((node), struct throtl_grp, rb_node)
 
+#define BIO_HASH_BITS       5
+#define BIO_TABLE_SIZE      (1 << BIO_HASH_BITS)
+
 struct throtl_grp {
 	/* List of throtl groups on the request queue*/
 	struct hlist_node tg_node;
@@ -56,8 +60,11 @@ struct throtl_grp {
 	atomic_t ref;
 	unsigned int flags;
 
-	/* Two lists for READ and WRITE */
-	struct bio_list bio_lists[2];
+	struct throtl_hash_list {
+		/* Two lists for READ and WRITE */
+		struct bio_list bio_lists[2];
+	} bio_hash[BIO_TABLE_SIZE];
+	int read_index, write_index;
 
 	/* Number of queued bios on READ and WRITE lists */
 	unsigned int nr_queued[2];
@@ -135,6 +142,10 @@ THROTL_TG_FNS(on_rr);
 #define throtl_log(td, fmt, args...)	\
 	blk_add_trace_msg((td)->queue, "throtl " fmt, ##args)
 
+#define bio_hashfn(val, pid)						\
+	hash_long(((unsigned long)val << 6 | BIO_HASH_BITS) +           \
+		(unsigned long)pid * 7, BIO_HASH_BITS)
+
 static inline struct throtl_grp *tg_of_blkg(struct blkio_group *blkg)
 {
 	if (blkg)
@@ -183,11 +194,17 @@ static void throtl_put_tg(struct throtl_grp *tg)
 
 static void throtl_init_group(struct throtl_grp *tg)
 {
+	int i;
+
 	INIT_HLIST_NODE(&tg->tg_node);
 	RB_CLEAR_NODE(&tg->rb_node);
-	bio_list_init(&tg->bio_lists[0]);
-	bio_list_init(&tg->bio_lists[1]);
 	tg->limits_changed = false;
+
+	for (i = 0; i < BIO_TABLE_SIZE; i++) {
+		bio_list_init(&tg->bio_hash[i].bio_lists[0]);
+		bio_list_init(&tg->bio_hash[i].bio_lists[1]);
+	}
+	tg->read_index = tg->write_index = 0;
 
 	/* Practically unlimited BW */
 	tg->bps[0] = tg->bps[1] = -1;
@@ -688,6 +705,7 @@ static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
 {
 	bool rw = bio_data_dir(bio);
 	unsigned long bps_wait = 0, iops_wait = 0, max_wait = 0;
+	int index = rw ? tg->write_index : tg->read_index;
 
 	/*
  	 * Currently whole state machine of group depends on first bio
@@ -695,7 +713,8 @@ static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
 	 * this function with a different bio if there are other bios
 	 * queued.
 	 */
-	BUG_ON(tg->nr_queued[rw] && bio != bio_list_peek(&tg->bio_lists[rw]));
+	BUG_ON(tg->nr_queued[rw] &&
+		bio != bio_list_peek(&tg->bio_hash[index].bio_lists[rw]));
 
 	/* If tg->bps = -1, then BW is unlimited */
 	if (tg->bps[rw] == -1 && tg->iops[rw] == -1) {
@@ -751,8 +770,11 @@ static void throtl_add_bio_tg(struct throtl_data *td, struct throtl_grp *tg,
 {
 	bool rw = bio_data_dir(bio);
 	bool sync = !(bio->bi_rw & REQ_WRITE) || (bio->bi_rw & REQ_SYNC);
+	int index;
 
-	bio_list_add(&tg->bio_lists[rw], bio);
+	index = bio_hashfn(current, current->pid);
+	bio_list_add(&tg->bio_hash[index].bio_lists[rw], bio);
+
 	/* Take a bio reference on tg */
 	throtl_ref_get_tg(tg);
 	tg->nr_queued[rw]++;
@@ -761,15 +783,37 @@ static void throtl_add_bio_tg(struct throtl_data *td, struct throtl_grp *tg,
 	throtl_enqueue_tg(td, tg);
 }
 
+static struct bio *get_next_bio(struct throtl_grp *tg, int dir)
+{
+	struct bio *bio = NULL;
+	int *index, tmp;
+
+	if (dir == READ)
+		index = &tg->read_index;
+	else
+		index = &tg->write_index;
+
+	tmp = *index;
+	bio = bio_list_peek(&tg->bio_hash[*index].bio_lists[dir]);
+	while (!bio) {
+		*index = (*index + 1) % BIO_TABLE_SIZE;
+		if (*index == tmp)
+			break;
+		bio = bio_list_peek(&tg->bio_hash[*index].bio_lists[dir]);
+	}
+
+	return bio;
+}
+
 static void tg_update_disptime(struct throtl_data *td, struct throtl_grp *tg)
 {
 	unsigned long read_wait = -1, write_wait = -1, min_wait = -1, disptime;
 	struct bio *bio;
 
-	if ((bio = bio_list_peek(&tg->bio_lists[READ])))
+	if ((bio = get_next_bio(tg, READ)))
 		tg_may_dispatch(td, tg, bio, &read_wait);
 
-	if ((bio = bio_list_peek(&tg->bio_lists[WRITE])))
+	if ((bio = get_next_bio(tg, WRITE)))
 		tg_may_dispatch(td, tg, bio, &write_wait);
 
 	min_wait = min(read_wait, write_wait);
@@ -786,8 +830,9 @@ static void tg_dispatch_one_bio(struct throtl_data *td, struct throtl_grp *tg,
 {
 	struct bio *bio;
 	bool sync;
+	int index = rw ? tg->write_index : tg->read_index;
 
-	bio = bio_list_pop(&tg->bio_lists[rw]);
+	bio = bio_list_pop(&tg->bio_hash[index].bio_lists[rw]);
 	sync = !(bio->bi_rw & REQ_WRITE) || (bio->bi_rw & REQ_SYNC);
 	tg->nr_queued[rw]--;
 	blkiocg_update_io_throttled_remove_stats(&tg->blkg, rw, sync);
@@ -814,21 +859,23 @@ static int throtl_dispatch_tg(struct throtl_data *td, struct throtl_grp *tg,
 
 	/* Try to dispatch 75% READS and 25% WRITES */
 
-	while ((bio = bio_list_peek(&tg->bio_lists[READ]))
+	while ((bio = get_next_bio(tg, READ))
 		&& tg_may_dispatch(td, tg, bio, NULL)) {
 
 		tg_dispatch_one_bio(td, tg, bio_data_dir(bio), bl);
 		nr_reads++;
+		tg->read_index = (tg->read_index + 1) % BIO_TABLE_SIZE;
 
 		if (nr_reads >= max_nr_reads)
 			break;
 	}
 
-	while ((bio = bio_list_peek(&tg->bio_lists[WRITE]))
+	while ((bio = get_next_bio(tg, WRITE))
 		&& tg_may_dispatch(td, tg, bio, NULL)) {
 
 		tg_dispatch_one_bio(td, tg, bio_data_dir(bio), bl);
 		nr_writes++;
+		tg->write_index = (tg->write_index + 1) % BIO_TABLE_SIZE;
 
 		if (nr_writes >= max_nr_writes)
 			break;
@@ -1227,10 +1274,14 @@ void blk_throtl_drain(struct request_queue *q)
 	while ((tg = throtl_rb_first(st))) {
 		throtl_dequeue_tg(td, tg);
 
-		while ((bio = bio_list_peek(&tg->bio_lists[READ])))
+		while ((bio = get_next_bio(tg, READ))) {
 			tg_dispatch_one_bio(td, tg, bio_data_dir(bio), &bl);
-		while ((bio = bio_list_peek(&tg->bio_lists[WRITE])))
+			tg->read_index = (tg->read_index + 1) % BIO_TABLE_SIZE;
+		}
+		while ((bio = get_next_bio(tg, WRITE))) {
 			tg_dispatch_one_bio(td, tg, bio_data_dir(bio), &bl);
+			tg->write_index = (tg->write_index + 1) % BIO_TABLE_SIZE;
+		}
 	}
 	spin_unlock_irq(q->queue_lock);
 
