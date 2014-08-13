@@ -71,6 +71,9 @@ struct throtl_grp {
 	/* Number of queued bios on READ and WRITE lists */
 	unsigned int nr_queued[2];
 
+	/* Number of sequential sectors in seq bios are charged only once */
+	unsigned int seq_bios;
+
 	/* bytes per second rate limits */
 	uint64_t bps[2];
 
@@ -144,9 +147,16 @@ THROTL_TG_FNS(on_rr);
 #define throtl_log(td, fmt, args...)	\
 	blk_add_trace_msg((td)->queue, "throtl " fmt, ##args)
 
-#define bio_hashfn(val, pid)						\
-	hash_long(((unsigned long)val << 6 | BIO_HASH_BITS) +           \
-		(unsigned long)pid * 7, BIO_HASH_BITS)
+static int bio_hashfn(struct task_struct *val,  struct throtl_grp *tg)
+{
+	pid_t pid = val->pid;
+
+	if (tg->seq_bios <= 1)
+		return 0;
+	
+	return hash_long(((unsigned long)val << 6 | BIO_HASH_BITS) +
+		(unsigned long)pid * 7, BIO_HASH_BITS);
+}
 
 static inline struct throtl_grp *tg_of_blkg(struct blkio_group *blkg)
 {
@@ -211,6 +221,11 @@ static void throtl_init_group(struct throtl_grp *tg)
 		tg->bio_hash[i].bio_nr[1] = 0;
 	}
 	tg->read_index = tg->write_index = 0;
+
+	/* Default 1 remains unchanged behaviour in blkcg dispatch. If set >=2
+	 * means sequential >=2 bios are charged once.
+	 */
+	tg->seq_bios = 1;
 
 	/* Practically unlimited BW */
 	tg->bps[0] = tg->bps[1] = -1;
@@ -733,9 +748,9 @@ static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
 	}
 
 	if (charge) {
-		index = bio_hashfn(current, current->pid);
+		index = bio_hashfn(current, tg);
 		if (tg->bio_hash[index].bio_end[rw] == bio->bi_sector &&
-				tg->bio_hash[index].bio_nr[rw] < 2) { // 2 seq bios
+				tg->bio_hash[index].bio_nr[rw] < tg->seq_bios) {
 			if (wait)
 				*wait = 0;
 			*charge = 0;
@@ -794,7 +809,7 @@ static void throtl_add_bio_tg(struct throtl_data *td, struct throtl_grp *tg,
 	bool sync = !(bio->bi_rw & REQ_WRITE) || (bio->bi_rw & REQ_SYNC);
 	int index;
 
-	index = bio_hashfn(current, current->pid);
+	index = bio_hashfn(current, tg);
 	bio_list_add(&tg->bio_hash[index].bio_lists[rw], bio);
 
 	/* Take a bio reference on tg */
@@ -880,11 +895,11 @@ dispatch:
 
 	if ((bio = bio_list_peek(&tg->bio_hash[index].bio_lists[rw])) &&
 		tg->bio_hash[index].bio_end[rw] == bio->bi_sector) {
-		if (tg->bio_hash[index].bio_nr[rw] < 2) { // 2 seq bios
+		if (tg->bio_hash[index].bio_nr[rw] < tg->seq_bios) {
 			charge = 0;
 			goto dispatch;
 		}
-		tg->bio_hash[index].bio_nr[rw] = 2;
+		tg->bio_hash[index].bio_nr[rw] = tg->seq_bios;
 	}
 	throtl_trim_slice(td, tg, rw);
 }
@@ -1176,6 +1191,14 @@ static void throtl_update_blkio_group_write_iops(struct request_queue *q,
 	throtl_update_blkio_group_common(q->td, tg);
 }
 
+static void throtl_update_blkio_group_seq_bios(struct request_queue *q,
+			struct blkio_group *blkg, unsigned int seq_bios)
+{
+	struct throtl_grp *tg = tg_of_blkg(blkg);
+
+	tg->seq_bios = seq_bios;
+}
+
 static void throtl_shutdown_wq(struct request_queue *q)
 {
 	struct throtl_data *td = q->td;
@@ -1194,6 +1217,8 @@ static struct blkio_policy_type blkio_policy_throtl = {
 					throtl_update_blkio_group_read_iops,
 		.blkio_update_group_write_iops_fn =
 					throtl_update_blkio_group_write_iops,
+		.blkio_update_group_seq_bios_fn =
+					throtl_update_blkio_group_seq_bios,
 	},
 	.plid = BLKIO_POLICY_THROTL,
 };
@@ -1256,7 +1281,7 @@ bool blk_throtl_bio(struct request_queue *q, struct bio *bio)
 
 	/* Bio is with-in rate limit of group */
 	if (tg_may_dispatch(td, tg, bio, NULL, &charge)) {
-		index = bio_hashfn(current, current->pid);
+		index = bio_hashfn(current, tg);
 		throtl_charge_bio(tg, bio, charge);
 
 		/*

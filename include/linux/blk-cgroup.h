@@ -103,6 +103,7 @@ enum blkcg_file_name_throtl {
 	BLKIO_THROTL_write_bps_device,
 	BLKIO_THROTL_read_iops_device,
 	BLKIO_THROTL_write_iops_device,
+	BLKIO_THROTL_seq_bios_device,
 	BLKIO_THROTL_io_service_bytes,
 	BLKIO_THROTL_io_serviced,
 	BLKIO_THROTL_io_queued,
@@ -197,6 +198,7 @@ struct blkio_policy_node {
 		 */
 		u64 bps;
 		unsigned int iops;
+		unsigned int seq_bios;
 	} val;
 };
 
@@ -224,6 +226,8 @@ typedef void (blkio_update_group_read_iops_fn) (struct request_queue *q,
 			struct blkio_group *blkg, unsigned int read_iops);
 typedef void (blkio_update_group_write_iops_fn) (struct request_queue *q,
 			struct blkio_group *blkg, unsigned int write_iops);
+typedef void (blkio_update_group_seq_bios_fn) (struct request_queue *q,
+			struct blkio_group *blkg, unsigned int seq_bios);
 
 struct blkio_policy_ops {
 	blkio_unlink_group_fn *blkio_unlink_group_fn;
@@ -232,6 +236,7 @@ struct blkio_policy_ops {
 	blkio_update_group_write_bps_fn *blkio_update_group_write_bps_fn;
 	blkio_update_group_read_iops_fn *blkio_update_group_read_iops_fn;
 	blkio_update_group_write_iops_fn *blkio_update_group_write_iops_fn;
+	blkio_update_group_seq_bios_fn *blkio_update_group_seq_bios_fn;
 };
 
 struct blkio_policy_type {

@@ -156,6 +156,24 @@ static inline void blkio_update_group_iops(struct blkio_group *blkg,
 	}
 }
 
+static inline void blkio_update_group_sectors(struct blkio_group *blkg,
+			unsigned int sectors, int fileid)
+{
+	struct blkio_policy_type *blkiop;
+
+	list_for_each_entry(blkiop, &blkio_list, list) {
+
+		/* If this policy does not own the blkg, do not send updates */
+		if (blkiop->plid != blkg->plid)
+			continue;
+
+		if (fileid == BLKIO_THROTL_seq_bios_device
+		    && blkiop->ops.blkio_update_group_seq_bios_fn)
+			blkiop->ops.blkio_update_group_seq_bios_fn(blkg->q,
+								blkg,sectors);
+	}
+}
+
 /*
  * Add to the appropriate stat variable depending on the request type.
  * This should be called with the blkg->stats_lock held.
@@ -792,7 +810,7 @@ static int blkio_policy_parse_and_set(char *buf,
 	int i = 0, ret = -EINVAL;
 	int part;
 	dev_t dev;
-	u64 bps, iops;
+	u64 bps, iops, seq_bios;
 
 	memset(s, 0, sizeof(s));
 
@@ -872,6 +890,14 @@ static int blkio_policy_parse_and_set(char *buf,
 			newpn->plid = plid;
 			newpn->fileid = fileid;
 			newpn->val.iops = (unsigned int)iops;
+			break;
+		case BLKIO_THROTL_seq_bios_device:
+			if (strict_strtoull(s[1], 10, &seq_bios))
+				goto out;
+
+			newpn->plid = plid;
+			newpn->fileid = fileid;
+			newpn->val.seq_bios = (unsigned int)seq_bios;
 			break;
 		}
 		break;
@@ -988,6 +1014,9 @@ static void blkio_update_policy_rule(struct blkio_policy_node *oldpn,
 		case BLKIO_THROTL_read_iops_device:
 		case BLKIO_THROTL_write_iops_device:
 			oldpn->val.iops = newpn->val.iops;
+			break;
+		case BLKIO_THROTL_seq_bios_device:
+			oldpn->val.seq_bios = newpn->val.seq_bios;
 		}
 		break;
 	default:
@@ -1002,7 +1031,7 @@ static void blkio_update_policy_rule(struct blkio_policy_node *oldpn,
 static void blkio_update_blkg_policy(struct blkio_cgroup *blkcg,
 		struct blkio_group *blkg, struct blkio_policy_node *pn)
 {
-	unsigned int weight, iops;
+	unsigned int weight, iops, seq_bios;
 	u64 bps;
 
 	switch(pn->plid) {
@@ -1022,6 +1051,10 @@ static void blkio_update_blkg_policy(struct blkio_cgroup *blkcg,
 		case BLKIO_THROTL_write_iops_device:
 			iops = pn->val.iops ? pn->val.iops : (-1);
 			blkio_update_group_iops(blkg, iops, pn->fileid);
+			break;
+		case BLKIO_THROTL_seq_bios_device:
+			seq_bios = pn->val.seq_bios;
+			blkio_update_group_sectors(blkg, seq_bios, pn->fileid);
 			break;
 		}
 		break;
@@ -1133,6 +1166,10 @@ blkio_print_policy_node(struct seq_file *m, struct blkio_policy_node *pn)
 				seq_printf(m, "%u:%u\t%u\n", MAJOR(pn->dev),
 					MINOR(pn->dev), pn->val.iops);
 				break;
+			case BLKIO_THROTL_seq_bios_device:
+				seq_printf(m, "%u:%u\t%u\n", MAJOR(pn->dev),
+					MINOR(pn->dev), pn->val.seq_bios);
+				break;
 			}
 			break;
 		default:
@@ -1182,6 +1219,7 @@ static int blkiocg_file_read(struct cgroup *cgrp, struct cftype *cft,
 		case BLKIO_THROTL_write_bps_device:
 		case BLKIO_THROTL_read_iops_device:
 		case BLKIO_THROTL_write_iops_device:
+		case BLKIO_THROTL_seq_bios_device:
 			blkio_read_policy_node_files(cft, blkcg, m);
 			return 0;
 		default:
@@ -1487,6 +1525,14 @@ struct cftype blkio_files[] = {
 		.name = "throttle.write_iops_device",
 		.private = BLKIOFILE_PRIVATE(BLKIO_POLICY_THROTL,
 				BLKIO_THROTL_write_iops_device),
+		.read_seq_string = blkiocg_file_read,
+		.write_string = blkiocg_file_write,
+		.max_write_len = 256,
+	},
+	{
+		.name = "throttle.seq_bios_device",
+		.private = BLKIOFILE_PRIVATE(BLKIO_POLICY_THROTL,
+				BLKIO_THROTL_seq_bios_device),
 		.read_seq_string = blkiocg_file_read,
 		.write_string = blkiocg_file_write,
 		.max_write_len = 256,
