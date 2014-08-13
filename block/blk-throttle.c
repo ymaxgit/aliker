@@ -63,6 +63,8 @@ struct throtl_grp {
 	struct throtl_hash_list {
 		/* Two lists for READ and WRITE */
 		struct bio_list bio_lists[2];
+		sector_t bio_end[2];
+		int bio_nr[2];
 	} bio_hash[BIO_TABLE_SIZE];
 	int read_index, write_index;
 
@@ -203,6 +205,10 @@ static void throtl_init_group(struct throtl_grp *tg)
 	for (i = 0; i < BIO_TABLE_SIZE; i++) {
 		bio_list_init(&tg->bio_hash[i].bio_lists[0]);
 		bio_list_init(&tg->bio_hash[i].bio_lists[1]);
+		tg->bio_hash[i].bio_end[0] = 0;
+		tg->bio_hash[i].bio_end[1] = 0;
+		tg->bio_hash[i].bio_nr[0] = 0;
+		tg->bio_hash[i].bio_nr[1] = 0;
 	}
 	tg->read_index = tg->write_index = 0;
 
@@ -701,7 +707,7 @@ static bool tg_no_rule_group(struct throtl_grp *tg, bool rw) {
  * of jiffies to wait before this bio is with-in IO rate and can be dispatched
  */
 static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
-				struct bio *bio, unsigned long *wait)
+			struct bio *bio, unsigned long *wait, int *charge)
 {
 	bool rw = bio_data_dir(bio);
 	unsigned long bps_wait = 0, iops_wait = 0, max_wait = 0;
@@ -716,11 +722,25 @@ static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
 	BUG_ON(tg->nr_queued[rw] &&
 		bio != bio_list_peek(&tg->bio_hash[index].bio_lists[rw]));
 
+	if (charge)
+		*charge = 1;
+
 	/* If tg->bps = -1, then BW is unlimited */
 	if (tg->bps[rw] == -1 && tg->iops[rw] == -1) {
 		if (wait)
 			*wait = 0;
 		return 1;
+	}
+
+	if (charge) {
+		index = bio_hashfn(current, current->pid);
+		if (tg->bio_hash[index].bio_end[rw] == bio->bi_sector &&
+				tg->bio_hash[index].bio_nr[rw] < 2) { // 2 seq bios
+			if (wait)
+				*wait = 0;
+			*charge = 0;
+			return 1;
+		}
 	}
 
 	/*
@@ -753,14 +773,16 @@ static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
 	return 0;
 }
 
-static void throtl_charge_bio(struct throtl_grp *tg, struct bio *bio)
+static void throtl_charge_bio(struct throtl_grp *tg, struct bio *bio, int charge)
 {
 	bool rw = bio_data_dir(bio);
 	bool sync = bio->bi_rw & REQ_SYNC;
 
-	/* Charge the bio to the group */
-	tg->bytes_disp[rw] += bio->bi_size;
-	tg->io_disp[rw]++;
+	if (charge) {
+		/* Charge the bio to the group */
+		tg->bytes_disp[rw] += bio->bi_size;
+		tg->io_disp[rw]++;
+	}
 
 	blkiocg_update_dispatch_stats(&tg->blkg, bio->bi_size, rw, sync);
 }
@@ -811,10 +833,10 @@ static void tg_update_disptime(struct throtl_data *td, struct throtl_grp *tg)
 	struct bio *bio;
 
 	if ((bio = get_next_bio(tg, READ)))
-		tg_may_dispatch(td, tg, bio, &read_wait);
+		tg_may_dispatch(td, tg, bio, &read_wait, NULL);
 
 	if ((bio = get_next_bio(tg, WRITE)))
-		tg_may_dispatch(td, tg, bio, &write_wait);
+		tg_may_dispatch(td, tg, bio, &write_wait, NULL);
 
 	min_wait = min(read_wait, write_wait);
 	disptime = jiffies + min_wait;
@@ -831,7 +853,9 @@ static void tg_dispatch_one_bio(struct throtl_data *td, struct throtl_grp *tg,
 	struct bio *bio;
 	bool sync;
 	int index = rw ? tg->write_index : tg->read_index;
+	int charge = 1;
 
+dispatch:
 	bio = bio_list_pop(&tg->bio_hash[index].bio_lists[rw]);
 	sync = !(bio->bi_rw & REQ_WRITE) || (bio->bi_rw & REQ_SYNC);
 	tg->nr_queued[rw]--;
@@ -842,10 +866,26 @@ static void tg_dispatch_one_bio(struct throtl_data *td, struct throtl_grp *tg,
 	BUG_ON(td->nr_queued[rw] <= 0);
 	td->nr_queued[rw]--;
 
-	throtl_charge_bio(tg, bio);
+	throtl_charge_bio(tg, bio, charge);
 	bio_list_add(bl, bio);
 	bio->bi_rw |= (1 << BIO_RW_THROTTLED);
 
+	if (!charge) {
+		tg->bio_hash[index].bio_nr[rw] ++;
+		tg->bio_hash[index].bio_end[rw] += bio_sectors(bio);
+	} else {
+		tg->bio_hash[index].bio_nr[rw] = 1;
+		tg->bio_hash[index].bio_end[rw] = bio->bi_sector + bio_sectors(bio);
+	}
+
+	if ((bio = bio_list_peek(&tg->bio_hash[index].bio_lists[rw])) &&
+		tg->bio_hash[index].bio_end[rw] == bio->bi_sector) {
+		if (tg->bio_hash[index].bio_nr[rw] < 2) { // 2 seq bios
+			charge = 0;
+			goto dispatch;
+		}
+		tg->bio_hash[index].bio_nr[rw] = 2;
+	}
 	throtl_trim_slice(td, tg, rw);
 }
 
@@ -860,7 +900,7 @@ static int throtl_dispatch_tg(struct throtl_data *td, struct throtl_grp *tg,
 	/* Try to dispatch 75% READS and 25% WRITES */
 
 	while ((bio = get_next_bio(tg, READ))
-		&& tg_may_dispatch(td, tg, bio, NULL)) {
+		&& tg_may_dispatch(td, tg, bio, NULL, NULL)) {
 
 		tg_dispatch_one_bio(td, tg, bio_data_dir(bio), bl);
 		nr_reads++;
@@ -871,7 +911,7 @@ static int throtl_dispatch_tg(struct throtl_data *td, struct throtl_grp *tg,
 	}
 
 	while ((bio = get_next_bio(tg, WRITE))
-		&& tg_may_dispatch(td, tg, bio, NULL)) {
+		&& tg_may_dispatch(td, tg, bio, NULL, NULL)) {
 
 		tg_dispatch_one_bio(td, tg, bio_data_dir(bio), bl);
 		nr_writes++;
@@ -1165,6 +1205,9 @@ bool blk_throtl_bio(struct request_queue *q, struct bio *bio)
 	bool rw = bio_data_dir(bio), update_disptime = true;
 	struct blkio_cgroup *blkcg;
 	bool throttled = false;
+	int index;
+	int charge;
+
 
 	if (bio_rw_flagged(bio, BIO_RW_THROTTLED)) {
 		bio->bi_rw &= ~(1 << BIO_RW_THROTTLED);
@@ -1212,8 +1255,9 @@ bool blk_throtl_bio(struct request_queue *q, struct bio *bio)
 	}
 
 	/* Bio is with-in rate limit of group */
-	if (tg_may_dispatch(td, tg, bio, NULL)) {
-		throtl_charge_bio(tg, bio);
+	if (tg_may_dispatch(td, tg, bio, NULL, &charge)) {
+		index = bio_hashfn(current, current->pid);
+		throtl_charge_bio(tg, bio, charge);
 
 		/*
 		 * We need to trim slice even when bios are not being queued
@@ -1226,7 +1270,15 @@ bool blk_throtl_bio(struct request_queue *q, struct bio *bio)
 		 *
 		 * So keep on trimming slice even if bio is not queued.
 		 */
-		throtl_trim_slice(td, tg, rw);
+		if (!charge) {
+			tg->bio_hash[index].bio_nr[rw] ++;
+			tg->bio_hash[index].bio_end[rw] += bio_sectors(bio);
+		} else {
+			tg->bio_hash[index].bio_nr[rw] = 1;
+			tg->bio_hash[index].bio_end[rw] = bio->bi_sector +
+							bio_sectors(bio);
+			throtl_trim_slice(td, tg, rw);
+		}
 		goto out_unlock;
 	}
 
