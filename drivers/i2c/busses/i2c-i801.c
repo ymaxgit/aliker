@@ -51,6 +51,10 @@
   Patsburg (PCH) IDF    0x1d72     32     hard     yes     yes     yes
   Panther Point (PCH)   0x1e22     32     hard     yes     yes     yes
   Lynx Point (PCH)      0x8c22     32     hard     yes     yes     yes
+  Wellsburg (PCH)       0x8d22     32     hard     yes     yes     yes
+  Wellsburg (PCH) MS    0x8d7d     32     hard     yes     yes     yes
+  Wellsburg (PCH) MS    0x8d7e     32     hard     yes     yes     yes
+  Wellsburg (PCH) MS    0x8d7f     32     hard     yes     yes     yes
 
   Features supported by this driver:
   Software PEC                     no
@@ -140,6 +144,10 @@
 #define PCI_DEVICE_ID_INTEL_PATSBURG_SMBUS_IDF2	0x1d72
 #define PCI_DEVICE_ID_INTEL_PANTHERPOINT_SMBUS	0x1e22
 #define PCI_DEVICE_ID_INTEL_LYNXPOINT_SMBUS	0x8c22
+#define PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS	0x8d22
+#define PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS0	0x8d7d
+#define PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS1	0x8d7e
+#define PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS2	0x8d7f
 
 struct i801_priv {
 	struct i2c_adapter adapter;
@@ -155,6 +163,8 @@ static struct pci_driver i801_driver;
 #define FEATURE_BLOCK_BUFFER	(1 << 1)
 #define FEATURE_BLOCK_PROC	(1 << 2)
 #define FEATURE_I2C_BLOCK_READ	(1 << 3)
+/* Not really a feature, but it's convenient to handle it as such */
+#define FEATURE_IDF		(1 << 15)
 
 static const char *i801_feature_names[] = {
 	"SMBus PEC",
@@ -626,6 +636,10 @@ static const struct pci_device_id i801_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_PATSBURG_SMBUS_IDF2) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_PANTHERPOINT_SMBUS) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_LYNXPOINT_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS0) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS1) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS2) },
 	{ 0, }
 };
 
@@ -751,6 +765,11 @@ static int __devinit i801_probe(struct pci_dev *dev,
 
 	priv->pci_dev = dev;
 	switch (dev->device) {
+	case PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS0:
+	case PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS1:
+	case PCI_DEVICE_ID_INTEL_WELLSBURG_SMBUS_MS2:
+		priv->features |= FEATURE_IDF;
+		/* fall through */
 	default:
 		priv->features |= FEATURE_I2C_BLOCK_READ;
 		/* fall through */
@@ -837,6 +856,13 @@ static int __devinit i801_probe(struct pci_dev *dev,
 	}
 
 	/* Register optional slaves */
+
+	/* Only register slaves on main SMBus channel */
+	if (priv->features & FEATURE_IDF) {
+		pci_set_drvdata(dev, priv);
+		return 0;
+	}
+
 #if defined CONFIG_INPUT_APANEL || defined CONFIG_INPUT_APANEL_MODULE
 	if (apanel_addr) {
 		struct i2c_board_info info;
