@@ -2599,6 +2599,13 @@ int tcp_disconnect(struct sock *sk, int flags)
 	return err;
 }
 
+void tcp_sock_destruct(struct sock *sk)
+{
+	inet_sock_destruct(sk);
+
+	kfree(inet_csk(sk)->icsk_accept_queue.fastopenq);
+}
+
 /*
  *	Socket option code for TCP.
  */
