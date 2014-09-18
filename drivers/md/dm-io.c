@@ -355,8 +355,10 @@ static void dispatch_io(struct dm_io_request *io_req, unsigned int num_regions,
 
 	BUG_ON(num_regions > DM_IO_MAX_REGIONS);
 
-	if (sync)
+	if (sync) {
 		rw |= (1 << BIO_RW_SYNCIO) | (1 << BIO_RW_UNPLUG);
+		io_req->bi_rw = rw;
+	}
 
 	/*
 	 * For multiple regions we need to be careful to rewind
