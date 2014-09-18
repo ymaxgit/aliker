@@ -1562,7 +1562,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		__tcp_v4_send_check(skb_synack, ireq->loc_addr, ireq->rmt_addr);
 		skb_set_queue_mapping(skb_synack, skb_get_queue_mapping(skb));
 	} else
-		goto drop_and_free;
+		goto drop_and_release;
 
 	if (likely(!do_fastopen)) {
 		int err;
@@ -1570,7 +1570,7 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 		     ireq->rmt_addr, ireq->opt);
 		err = net_xmit_eval(err);
 		if (err || want_cookie)
-			goto drop_and_free;
+			goto drop_and_release;
 
 		tcp_rsk(req)->snt_synack = tcp_time_stamp;
 		tcp_rsk(req)->listener = NULL;
@@ -1580,8 +1580,9 @@ int tcp_v4_conn_request(struct sock *sk, struct sk_buff *skb)
 			NET_INC_STATS_BH(sock_net(sk),
 			    LINUX_MIB_TCPFASTOPENPASSIVEFAIL);
 	} else if (tcp_v4_conn_req_fastopen(sk, skb, skb_synack, req))
-		goto drop_and_free;
+		goto drop_and_release;
 
+	dst_release(dst);
 	return 0;
 
 drop_and_release:
