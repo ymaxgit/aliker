@@ -1850,7 +1850,13 @@ unsigned ata_exec_internal_sg(struct ata_device *dev,
 		}
 	}
 
+	if (ap->ops->error_handler)
+		ata_eh_release(ap);
+
 	rc = wait_for_completion_timeout(&wait, msecs_to_jiffies(timeout));
+
+	if (ap->ops->error_handler)
+		ata_eh_acquire(ap);
 
 	ata_port_flush_task(ap);
 
@@ -3626,7 +3632,7 @@ int ata_wait_ready(struct ata_link *link, unsigned long deadline,
 			warned = 1;
 		}
 
-		msleep(50);
+		ata_msleep(link->ap, 50);
 	}
 }
 
@@ -3647,7 +3653,7 @@ int ata_wait_ready(struct ata_link *link, unsigned long deadline,
 int ata_wait_after_reset(struct ata_link *link, unsigned long deadline,
 				int (*check_ready)(struct ata_link *link))
 {
-	msleep(ATA_WAIT_AFTER_RESET);
+	ata_msleep(link->ap, ATA_WAIT_AFTER_RESET);
 
 	return ata_wait_ready(link, deadline, check_ready);
 }
@@ -3695,7 +3701,7 @@ int sata_link_debounce(struct ata_link *link, const unsigned long *params,
 	last_jiffies = jiffies;
 
 	while (1) {
-		msleep(interval);
+		ata_msleep(link->ap, interval);
 		if ((rc = sata_scr_read(link, SCR_STATUS, &cur)))
 			return rc;
 		cur &= 0xf;
@@ -3760,7 +3766,7 @@ int sata_link_resume(struct ata_link *link, const unsigned long *params,
 		 * immediately after resuming.  Delay 200ms before
 		 * debouncing.
 		 */
-		msleep(200);
+		ata_msleep(link->ap, 200);
 
 		/* is SControl restored correctly? */
 		if ((rc = sata_scr_read(link, SCR_CONTROL, &scontrol)))
@@ -3898,7 +3904,7 @@ int sata_link_hardreset(struct ata_link *link, const unsigned long *timing,
 	/* Couldn't find anything in SATA I/II specs, but AHCI-1.1
 	 * 10.4.2 says at least 1 ms.
 	 */
-	msleep(1);
+	ata_msleep(link->ap, 1);
 
 	/* bring link back */
 	rc = sata_link_resume(link, timing, deadline);
@@ -5771,6 +5777,7 @@ struct ata_host *ata_host_alloc(struct device *dev, int max_ports)
 	dev_set_drvdata(dev, host);
 
 	spin_lock_init(&host->lock);
+	mutex_init(&host->eh_mutex);
 	host->dev = dev;
 	host->n_ports = max_ports;
 
@@ -6063,6 +6070,7 @@ void ata_host_init(struct ata_host *host, struct device *dev,
 		   struct ata_port_operations *ops)
 {
 	spin_lock_init(&host->lock);
+	mutex_init(&host->eh_mutex);
 	host->dev = dev;
 	host->ops = ops;
 }
@@ -6664,7 +6672,35 @@ int ata_ratelimit(void)
 }
 
 /**
+ *	ata_msleep - ATA EH owner aware msleep
+ *	@ap: ATA port to attribute the sleep to
+ *	@msecs: duration to sleep in milliseconds
+ *
+ *	Sleeps @msecs.  If the current task is owner of @ap's EH, the
+ *	ownership is released before going to sleep and reacquired
+ *	after the sleep is complete.  IOW, other ports sharing the
+ *	@ap->host will be allowed to own the EH while this task is
+ *	sleeping.
+ *
+ *	LOCKING:
+ *	Might sleep.
+ */
+void ata_msleep(struct ata_port *ap, unsigned int msecs)
+{
+	bool owns_eh = ap && ap->host->eh_owner == current;
+
+	if (owns_eh)
+		ata_eh_release(ap);
+
+	msleep(msecs);
+
+	if (owns_eh)
+		ata_eh_acquire(ap);
+}
+
+/**
  *	ata_wait_register - wait until register value changes
+ *	@ap: ATA port to wait register for, can be NULL
  *	@reg: IO-mapped register
  *	@mask: Mask to apply to read register value
  *	@val: Wait condition
@@ -6686,7 +6722,7 @@ int ata_ratelimit(void)
  *	RETURNS:
  *	The final register value.
  */
-u32 ata_wait_register(void __iomem *reg, u32 mask, u32 val,
+u32 ata_wait_register(struct ata_port *ap, void __iomem *reg, u32 mask, u32 val,
 		      unsigned long interval, unsigned long timeout)
 {
 	unsigned long deadline;
@@ -6701,7 +6737,7 @@ u32 ata_wait_register(void __iomem *reg, u32 mask, u32 val,
 	deadline = ata_deadline(jiffies, timeout);
 
 	while ((tmp & mask) == val && time_before(jiffies, deadline)) {
-		msleep(interval);
+		ata_msleep(ap, interval);
 		tmp = ioread32(reg);
 	}
 
@@ -6786,6 +6822,7 @@ EXPORT_SYMBOL_GPL(ata_std_postreset);
 EXPORT_SYMBOL_GPL(ata_dev_classify);
 EXPORT_SYMBOL_GPL(ata_dev_pair);
 EXPORT_SYMBOL_GPL(ata_ratelimit);
+EXPORT_SYMBOL_GPL(ata_msleep);
 EXPORT_SYMBOL_GPL(ata_wait_register);
 EXPORT_SYMBOL_GPL(ata_scsi_queuecmd);
 EXPORT_SYMBOL_GPL(ata_scsi_slave_config);
