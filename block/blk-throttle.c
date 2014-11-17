@@ -620,12 +620,24 @@ throtl_trim_slice(struct throtl_data *td, struct throtl_grp *tg, bool rw)
 }
 
 static bool tg_with_in_iops_limit(struct throtl_data *td, struct throtl_grp *tg,
-		struct bio *bio, unsigned long *wait)
+		struct bio *bio, unsigned long *wait, int *charge)
 {
 	bool rw = bio_data_dir(bio);
 	unsigned int io_allowed;
 	unsigned long jiffy_elapsed, jiffy_wait, jiffy_elapsed_rnd;
 	u64 tmp;
+	int index = rw ? tg->write_index : tg->read_index;
+
+	if (charge) {
+		index = bio_hashfn(current, tg);
+		if (tg->bio_hash[index].bio_end[rw] == bio->bi_sector &&
+				tg->bio_hash[index].bio_nr[rw] < tg->seq_bios) {
+			if (wait)
+				*wait = 0;
+			*charge = 0;
+			return 1;
+		}
+	}
 
 	jiffy_elapsed = jiffy_elapsed_rnd = jiffies - tg->slice_start[rw];
 
@@ -747,17 +759,6 @@ static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
 		return 1;
 	}
 
-	if (charge) {
-		index = bio_hashfn(current, tg);
-		if (tg->bio_hash[index].bio_end[rw] == bio->bi_sector &&
-				tg->bio_hash[index].bio_nr[rw] < tg->seq_bios) {
-			if (wait)
-				*wait = 0;
-			*charge = 0;
-			return 1;
-		}
-	}
-
 	/*
 	 * If previous slice expired, start a new one otherwise renew/extend
 	 * existing slice to make sure it is at least throtl_slice interval
@@ -771,7 +772,7 @@ static bool tg_may_dispatch(struct throtl_data *td, struct throtl_grp *tg,
 	}
 
 	if (tg_with_in_bps_limit(td, tg, bio, &bps_wait)
-	    && tg_with_in_iops_limit(td, tg, bio, &iops_wait)) {
+	    && tg_with_in_iops_limit(td, tg, bio, &iops_wait, charge)) {
 		if (wait)
 			*wait = 0;
 		return 1;
@@ -793,11 +794,11 @@ static void throtl_charge_bio(struct throtl_grp *tg, struct bio *bio, int charge
 	bool rw = bio_data_dir(bio);
 	bool sync = bio->bi_rw & REQ_SYNC;
 
-	if (charge) {
-		/* Charge the bio to the group */
-		tg->bytes_disp[rw] += bio->bi_size;
+	/* Charge the bio to the group */
+	tg->bytes_disp[rw] += bio->bi_size;
+
+	if (charge)
 		tg->io_disp[rw]++;
-	}
 
 	blkiocg_update_dispatch_stats(&tg->blkg, bio->bi_size, rw, sync);
 }
@@ -895,7 +896,8 @@ dispatch:
 
 	if ((bio = bio_list_peek(&tg->bio_hash[index].bio_lists[rw])) &&
 		tg->bio_hash[index].bio_end[rw] == bio->bi_sector) {
-		if (tg->bio_hash[index].bio_nr[rw] < tg->seq_bios) {
+		if (tg->bio_hash[index].bio_nr[rw] < tg->seq_bios &&
+			tg_with_in_bps_limit(td, tg, bio, NULL)) { /* should within bps limit */
 			charge = 0;
 			goto dispatch;
 		}
