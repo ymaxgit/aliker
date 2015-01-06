@@ -412,13 +412,13 @@ static int ismt_access(struct i2c_adapter *adap, u16 addr,
 		dev_dbg(&priv->pci_dev->dev,
 			" dma_direction=%d\n", dma_direction);
 
-		/* packet is created like this: [cmd, data_len, data],
-		 * dma_size indicates len from data_len to data, So plus 1,
+		/* packet is created like this: [cmd, data],
+		 * dma_size indicates len from data_len to data,
 		 * and then clear out the rest of buffer.
 		 */
 		if (read_write == I2C_SMBUS_WRITE)
-			memset(&data->block[dma_size + 1], 0,
-				sizeof(data->block) - dma_size - 1);
+			memset(&data->block[dma_size], 0,
+				sizeof(data->block) - dma_size);
 
 		dma_addr = dma_map_single(&priv->pci_dev->dev,
 				      data,

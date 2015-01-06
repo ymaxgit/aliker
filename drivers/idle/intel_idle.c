@@ -1,7 +1,7 @@
 /*
  * intel_idle.c - native hardware idle loop for modern Intel processors
  *
- * Copyright (c) 2010, Intel Corporation.
+ * Copyright (c) 2013, Intel Corporation.
  * Len Brown <len.brown@intel.com>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -233,6 +233,24 @@ static struct cpuidle_state atom_cstates[MWAIT_MAX_NUM_CSTATES] = {
 		.target_residency = 800,
 		.enter = NULL },	/* disabled */
 };
+static struct cpuidle_state avn_cstates[MWAIT_MAX_NUM_CSTATES] = {
+	{
+		.name = "C1-AVN",
+		.desc = "MWAIT 0x00",
+		.driver_data = (void *) 0x00,
+		.flags = CPUIDLE_FLAG_TIME_VALID,
+		.exit_latency = 2,
+		.target_residency = 2,
+		.enter = &intel_idle },
+	{
+		.name = "C6-AVN",
+		.desc = "MWAIT 0x51",
+		.driver_data = (void *) 0x51,
+		.flags = CPUIDLE_FLAG_TIME_VALID,
+		.exit_latency = 15,
+		.target_residency = 45,
+		.enter = &intel_idle },
+};
 
 /**
  * intel_idle
@@ -371,7 +389,9 @@ static int intel_idle_probe(void)
 	case 0x3E:	/* Ivy Bridge Xeon */
 		cpuidle_state_table = ivb_cstates;
 		break;
-
+	case 0x4D:	/* Avoton Processor */
+		cpuidle_state_table = avn_cstates;
+		break;
 	default:
 		pr_debug(PREFIX "does not run on family %d model %d\n",
 			boot_cpu_data.x86, boot_cpu_data.x86_model);
