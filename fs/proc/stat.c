@@ -111,6 +111,15 @@ static int show_stat(struct seq_file *p, void *v)
 	rcu_read_lock();
 	if (in_noninit_pid_ns(current->nsproxy->pid_ns) &&
 		task_in_nonroot_cpuacct(current)) {
+
+		/*-----fix btime in instance-----*/
+		struct task_struct *init_tsk = NULL;
+		if (likely(current->nsproxy->pid_ns))
+			init_tsk = current->nsproxy->pid_ns->child_reaper;
+		if (likely(init_tsk))
+			jif = jif + init_tsk->start_time.tv_sec;
+		/* ----------end----------- */
+
 		cpumask_copy(&cpus_allowed, cpu_possible_mask);
 		if (task_subsys_state(current, cpuset_subsys_id)) {
 			memset(&cpus_allowed, 0, sizeof(cpus_allowed));
