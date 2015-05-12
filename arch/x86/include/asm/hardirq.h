@@ -12,6 +12,11 @@ typedef struct {
 	unsigned int apic_timer_irqs;	/* arch dependent */
 	unsigned int irq_spurious_count;
 #endif
+
+#ifdef CONFIG_HAVE_KVM
+    unsigned int kvm_posted_intr_ipis;
+#endif
+
 	unsigned int x86_platform_ipis;	/* arch dependent */
 	unsigned int apic_perf_irqs;
 #ifndef __GENKSYMS__
