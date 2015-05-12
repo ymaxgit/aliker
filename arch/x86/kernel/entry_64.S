@@ -972,6 +972,11 @@ apicinterrupt LOCAL_TIMER_VECTOR \
 apicinterrupt X86_PLATFORM_IPI_VECTOR \
 	x86_platform_ipi smp_x86_platform_ipi
 
+#ifdef CONFIG_HAVE_KVM
+apicinterrupt POSTED_INTR_VECTOR \
+    kvm_posted_intr_ipi smp_kvm_posted_intr_ipi
+#endif
+
 #ifdef CONFIG_SMP
 apicinterrupt INVALIDATE_TLB_VECTOR_START+0 \
 	invalidate_interrupt0 smp_invalidate_interrupt

@@ -103,6 +103,11 @@
  */
 #define LOCAL_TIMER_VECTOR		0xef
 
+/* Vector for KVM to deliver posted interrupt IPI */
+#ifdef CONFIG_HAVE_KVM
+#define POSTED_INTR_VECTOR     0xee
+#endif
+
 /*
  * Generic system vector for platform specific use
  */
